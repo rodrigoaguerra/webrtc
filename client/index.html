@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC + Socket.IO</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<h2>📁 Transferência P2P (Socket.IO)</h2>
+
+<input type="text" id="room" placeholder="Sala">
+<button onclick="connect()">Conectar</button>
+
+<br><br>
+
+<input type="file" id="fileInput">
+<button onclick="sendFile()">Enviar</button>
+
+<br><br>
+
+<button onclick="download()">Baixar</button>
+
+<p id="status"></p>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
