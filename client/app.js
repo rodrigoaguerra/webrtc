@@ -2,6 +2,9 @@ let socket;
 let pc;
 let dataChannel;
 let receivedBuffers = [];
+let fileMeta = null;
+let receivedSize = 0;
+let totalSize = 0;
 
 const statusEl = document.getElementById("status");
 
@@ -23,11 +26,28 @@ const config = {
 function connect() {
   const room = document.getElementById("room").value;
 
-  socket = io("http://localhost:3000");
-
-  socket.emit("join-room", room);
+  socket = io("http://localhost:3000", {
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000
+  });
 
   initPeer(room);
+
+  socket.on("connect", () => {
+    log("Conectado ao servidor");
+
+    socket.emit("join-room", room);
+  });
+
+  socket.on("reconnect", () => {
+    log("Reconectado 🔄");
+
+    socket.emit("join-room", room);
+
+    resetPeer(room);
+  });
 
   socket.on("offer", async (offer) => {
     await pc.setRemoteDescription(offer);
@@ -70,12 +90,54 @@ function initPeer(room) {
   createOffer(room);
 }
 
+function resetPeer(room) {
+  if (pc) {
+    pc.close();
+    pc = null;
+  }
+
+  initPeer(room);
+}
+
 function setupDataChannel() {
   dataChannel.onopen = () => log("Canal aberto 🚀");
 
   dataChannel.onmessage = (event) => {
+    // metadata
+    if (typeof event.data === "string") {
+      const msg = JSON.parse(event.data);
+
+      if (msg.type === "meta") {
+        fileMeta = msg.data;
+        totalSize = fileMeta.size;
+        receivedSize = 0;
+        receivedBuffers = [];
+
+        log(`Recebendo: ${fileMeta.name} (${(fileMeta.size / 1024).toFixed(2)} KB)`);
+      }
+
+      if (msg.type === "received") {
+        log("Destinatário confirmou recebimento ✅");
+      }
+
+      return;
+    }
+
+    // chunk binário
     receivedBuffers.push(event.data);
-    log("Recebendo...");
+    receivedSize += event.data.byteLength;
+
+    const progress = ((receivedSize / totalSize) * 100).toFixed(2);
+
+    log(`Recebendo: ${progress}%`);
+    
+    if (receivedSize === totalSize) {
+      log("Arquivo recebido completo ✅");
+
+      dataChannel.send(JSON.stringify({
+        type: "received"
+      }));
+    }
   };
 }
 
@@ -89,6 +151,24 @@ async function createOffer(room) {
 // envio em chunks
 function sendFile() {
   const file = document.getElementById("fileInput").files[0];
+
+  fileMeta = {
+    name: file.name,
+    size: file.size
+  };
+
+  totalSize = file.size;
+
+  // envia metadata primeiro
+  dataChannel.send(JSON.stringify({
+    type: "meta",
+    data: fileMeta
+  }));
+
+  sendChunks(file);
+}
+
+function sendChunks(file) {
   const chunkSize = 16 * 1024;
   let offset = 0;
 
@@ -97,6 +177,10 @@ function sendFile() {
   reader.onload = (e) => {
     dataChannel.send(e.target.result);
     offset += e.target.result.byteLength;
+
+    // progresso envio
+    const progress = ((offset / file.size) * 100).toFixed(2);
+    log(`Enviando: ${progress}%`);
 
     if (offset < file.size) {
       readSlice(offset);
@@ -119,7 +203,7 @@ function download() {
 
   const a = document.createElement("a");
   a.href = url;
-  a.download = "arquivo_recebido";
+  a.download = fileMeta?.name || "arquivo";
   a.click();
 
   log("Download iniciado 📥");
