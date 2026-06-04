@@ -5,11 +5,95 @@ let receivedBuffers = [];
 let fileMeta = null;
 let receivedSize = 0;
 let totalSize = 0;
+let fileHandle = null;
+let writable = null;
+let useStream = false;
+let isStreamingToFile = false;
+let pendingTransfer = null;
+let waitingForAccept = false;
+let pendingChunks = [];
 
+const MAX_FILE_SIZE = 1024 * 1024 * 1024; // 1GB max
+const CHUNK_SIZE = 256 * 1024; // 256KB chunks
 const statusEl = document.getElementById("status");
+
+// Verificar suporte File System Access API
+const supportsFileSystemAPI = typeof window.showSaveFilePicker === "function";
+
+const acceptBtn = document.getElementById("acceptBtn");
+const acceptContainer = document.getElementById("acceptContainer");
 
 function log(msg) {
   statusEl.innerText = msg;
+}
+
+async function prepareFileSave(fileMeta) {
+  if (window.showSaveFilePicker) {
+    try {
+      fileHandle = await window.showSaveFilePicker({
+        suggestedName: fileMeta.name,
+        types: [
+          { description: "Arquivo", accept: { [fileMeta.type || "application/octet-stream"]: [] } }
+        ]
+      });
+
+      writable = await fileHandle.createWritable();
+      useStream = true;
+      isStreamingToFile = true;
+      log(`💾 Salvando direto em disco (streaming)`);
+    } catch (err) {
+      if (err.name !== "AbortError") {
+        console.error("Erro ao abrir arquivo:", err);
+        log("⚠️ Usando memória em vez de disco");
+      }
+      useStream = false;
+      isStreamingToFile = false;
+      receivedBuffers = [];
+    }
+  } else {
+    useStream = false;
+    isStreamingToFile = false;
+    receivedBuffers = [];
+  }
+  
+  waitingForAccept = false;
+  acceptContainer.style.display = "none";
+  pendingTransfer = null;
+  
+  // Processar chunks que chegaram enquanto esperava
+  if (pendingChunks.length > 0) {
+    log(`📥 Processando ${pendingChunks.length} chunks pendentes...`);
+    const chunks = [...pendingChunks];
+    pendingChunks = [];
+    
+    for (const chunk of chunks) {
+      if (isStreamingToFile && writable) {
+        try {
+          await writable.write(chunk);
+        } catch (err) {
+          console.error("Erro ao escrever arquivo:", err);
+          log("❌ Erro ao salvar arquivo");
+          return;
+        }
+      } else {
+        receivedBuffers.push(chunk);
+      }
+      
+      receivedSize += chunk.byteLength;
+      const progress = ((receivedSize / totalSize) * 100).toFixed(2);
+      const sizeMB = (receivedSize / 1024 / 1024).toFixed(2);
+      log(`📥 ${progress}% (${sizeMB}MB)`);
+    }
+    
+    if (receivedSize === totalSize) {
+      if (isStreamingToFile && writable) {
+        await writable.close();
+        log("✅ Arquivo salvo em disco");
+      } else {
+        log("✅ Arquivo recebido (na memória)");
+      }
+    }
+  }
 }
 
 const config = {
@@ -23,7 +107,7 @@ const config = {
   ]
 };
 
-function connect() {
+async function connect() {
   const room = document.getElementById("room").value;
 
   socket = io("http://localhost:3000", {
@@ -33,20 +117,20 @@ function connect() {
     reconnectionDelayMax: 5000
   });
 
-  initPeer(room);
-
-  socket.on("connect", () => {
+  socket.on("connect", async () => {
     log("Conectado ao servidor");
 
     socket.emit("join-room", room);
+
+    await initPeer(room);
   });
 
-  socket.on("reconnect", () => {
+  socket.on("reconnect", async () => {
     log("Reconectado 🔄");
 
     socket.emit("join-room", room);
 
-    resetPeer(room);
+    await resetPeer(room);
   });
 
   socket.on("offer", async (offer) => {
@@ -66,16 +150,16 @@ function connect() {
   });
 }
 
-function initPeer(room) {
+async function initPeer(room) {
   pc = new RTCPeerConnection(config);
 
   dataChannel = pc.createDataChannel("file");
 
-  setupDataChannel();
+  await setupDataChannel();
 
-  pc.ondatachannel = (event) => {
+  pc.ondatachannel = async (event) => {
     dataChannel = event.channel;
-    setupDataChannel();
+    await setupDataChannel();
   };
 
   pc.onicecandidate = (event) => {
@@ -90,19 +174,19 @@ function initPeer(room) {
   createOffer(room);
 }
 
-function resetPeer(room) {
+async function resetPeer(room) {
   if (pc) {
     pc.close();
     pc = null;
   }
 
-  initPeer(room);
+  await initPeer(room);
 }
 
-function setupDataChannel() {
+async function setupDataChannel() {
   dataChannel.onopen = () => log("Canal aberto 🚀");
 
-  dataChannel.onmessage = (event) => {
+  dataChannel.onmessage = async (event) => {
     // metadata
     if (typeof event.data === "string") {
       const msg = JSON.parse(event.data);
@@ -110,29 +194,70 @@ function setupDataChannel() {
       if (msg.type === "meta") {
         fileMeta = msg.data;
         totalSize = fileMeta.size;
-        receivedSize = 0;
-        receivedBuffers = [];
 
-        log(`Recebendo: ${fileMeta.name} (${(fileMeta.size / 1024).toFixed(2)} KB)`);
+        // Validar tamanho máximo
+        if (totalSize > MAX_FILE_SIZE) {
+          log(`❌ Arquivo muito grande (${(totalSize / 1024 / 1024 / 1024).toFixed(2)}GB). Máximo: 1GB`);
+          return;
+        }
+
+        receivedSize = 0;
+        isStreamingToFile = false;
+        waitingForAccept = true;
+        pendingChunks = [];
+        pendingTransfer = fileMeta;
+
+        // Mostrar botão de aceitar transferência
+        const sizeMB = (totalSize / 1024 / 1024).toFixed(2);
+        log(`🔔 Recebimento de ${fileMeta.name} (${sizeMB}MB) aguardando aceite...`);
+        
+        document.getElementById("transferFileName").innerText = fileMeta.name;
+        document.getElementById("transferFileSize").innerText = sizeMB + " MB";
+        acceptContainer.style.display = "block";
+        
+        return; // Esperar usuário aceitar
       }
 
       if (msg.type === "received") {
-        log("Destinatário confirmou recebimento ✅");
+        log("✅ Destinatário confirmou recebimento");
       }
 
       return;
     }
 
     // chunk binário
-    receivedBuffers.push(event.data);
+    if (waitingForAccept) {
+      // Buffer os dados enquanto esperamos o usuário aceitar
+      pendingChunks.push(event.data);
+      return;
+    }
+
+    if (isStreamingToFile && writable) {
+      try {
+        await writable.write(event.data);
+      } catch (err) {
+        console.error("Erro ao escrever arquivo:", err);
+        log("❌ Erro ao salvar arquivo");
+        return;
+      }
+    } else {
+      receivedBuffers.push(event.data);
+    }
+
     receivedSize += event.data.byteLength;
 
     const progress = ((receivedSize / totalSize) * 100).toFixed(2);
+    const sizeMB = (receivedSize / 1024 / 1024).toFixed(2);
 
-    log(`Recebendo: ${progress}%`);
+    log(`📥 ${progress}% (${sizeMB}MB)`);
     
     if (receivedSize === totalSize) {
-      log("Arquivo recebido completo ✅");
+      if (isStreamingToFile && writable) {
+        await writable.close();
+        log("✅ Arquivo salvo em disco");
+      } else {
+        log("✅ Arquivo recebido (na memória)");
+      }
 
       dataChannel.send(JSON.stringify({
         type: "received"
@@ -148,16 +273,44 @@ async function createOffer(room) {
   socket.emit("offer", { offer, room });
 }
 
-// envio em chunks
+// Event listener para botão de aceitar transferência
+if (acceptBtn) {
+  acceptBtn.addEventListener("click", async () => {
+    if (pendingTransfer) {
+      acceptBtn.disabled = true;
+      acceptBtn.innerText = "Processando...";
+      
+      await prepareFileSave(pendingTransfer);
+      
+      acceptBtn.disabled = false;
+      acceptBtn.innerText = "Aceitar";
+    }
+  });
+}
+
+// envio em chunks com throttling
 function sendFile() {
   const file = document.getElementById("fileInput").files[0];
+  
+  if (!file) {
+    log("❌ Selecione um arquivo");
+    return;
+  }
+
+  // Validar tamanho
+  if (file.size > MAX_FILE_SIZE) {
+    log(`❌ Arquivo muito grande (${(file.size / 1024 / 1024 / 1024).toFixed(2)}GB). Máximo: 1GB`);
+    return;
+  }
 
   fileMeta = {
     name: file.name,
-    size: file.size
+    size: file.size,
+    type: file.type
   };
 
   totalSize = file.size;
+  log(`📤 Enviando: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
 
   // envia metadata primeiro
   dataChannel.send(JSON.stringify({
@@ -169,35 +322,53 @@ function sendFile() {
 }
 
 function sendChunks(file) {
-  const chunkSize = 16 * 1024;
   let offset = 0;
-
   const reader = new FileReader();
+
+  const sendNextChunk = () => {
+    if (offset >= file.size) {
+      log("✅ Arquivo enviado completo");
+      return;
+    }
+
+    // Throttling: esperar se buffer estiver cheio
+    if (dataChannel.bufferedAmount > 1024 * 1024) {
+      setTimeout(sendNextChunk, 100);
+      return;
+    }
+
+    const slice = file.slice(offset, offset + CHUNK_SIZE);
+    reader.readAsArrayBuffer(slice);
+  };
 
   reader.onload = (e) => {
     dataChannel.send(e.target.result);
     offset += e.target.result.byteLength;
 
-    // progresso envio
     const progress = ((offset / file.size) * 100).toFixed(2);
-    log(`Enviando: ${progress}%`);
+    const sizeMB = (offset / 1024 / 1024).toFixed(2);
+    log(`📤 Enviando: ${progress}% (${sizeMB}MB)`);
 
-    if (offset < file.size) {
-      readSlice(offset);
-    } else {
-      log("Arquivo enviado ✅");
-    }
+    sendNextChunk();
   };
 
-  function readSlice(o) {
-    const slice = file.slice(o, o + chunkSize);
-    reader.readAsArrayBuffer(slice);
-  }
-
-  readSlice(0);
+  sendNextChunk();
 }
 
-function download() {
+async function download() {
+  if (isStreamingToFile) {
+    log("📁 Arquivo já foi salvo em disco");
+    return;
+  }
+
+  if (receivedBuffers.length === 0) {
+    log("❌ Nenhum arquivo para baixar");
+    return;
+  }
+
+  const totalSizeMB = (totalSize / 1024 / 1024).toFixed(2);
+  log(`📥 Preparando download ${totalSizeMB}MB...`);
+
   const blob = new Blob(receivedBuffers);
   const url = URL.createObjectURL(blob);
 
@@ -206,5 +377,8 @@ function download() {
   a.download = fileMeta?.name || "arquivo";
   a.click();
 
-  log("Download iniciado 📥");
+  log("✅ Download iniciado");
+
+  // Limpar referência após download
+  setTimeout(() => URL.revokeObjectURL(url), 100);
 }
