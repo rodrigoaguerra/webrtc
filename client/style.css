@@ -1,12 +1,131 @@
 body {
-  font-family: Arial;
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  background: #f4f7fb;
+  color: #1f2937;
   text-align: center;
-  padding: 40px;
+  margin: 0;
+  min-height: 100vh;
+}
+
+.app-shell {
+  max-width: 780px;
+  margin: 0 auto;
+  padding: 36px 24px 48px;
+}
+
+.hero {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: 2rem;
+}
+
+.hero p {
+  margin: 12px auto 0;
+  color: #4b5563;
+  max-width: 640px;
+  line-height: 1.6;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #e5e7eb;
+  border-radius: 18px;
+  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.08);
+  padding: 22px;
+  margin-bottom: 20px;
+}
+
+.card-warning {
+  border-color: #f59e0b;
+}
+
+.card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 18px;
+  font-weight: 600;
+  color: #111827;
+}
+
+.form-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  justify-content: center;
+}
+
+input[type="text"], input[type="file"] {
+  width: 100%;
+  max-width: 420px;
+  padding: 12px 14px;
+  border: 1px solid #d1d5db;
+  border-radius: 12px;
+  font-size: 1rem;
+  color: #111827;
+  background: #f9fafb;
+}
+
+input[type="file"] {
+  padding: 10px 14px;
 }
 
 button {
-  padding: 10px;
-  margin: 5px;
+  border: none;
+  border-radius: 12px;
+  padding: 12px 20px;
+  font-size: 0.98rem;
+  cursor: pointer;
+  background: #3b82f6;
+  color: #ffffff;
+  transition: transform 0.18s ease, background 0.18s ease;
+}
+
+button:hover {
+  transform: translateY(-1px);
+  background: #2563eb;
+}
+
+button.primary {
+  min-width: 120px;
+}
+
+.status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  border: 1px solid transparent;
+}
+
+.status-chip.offline {
+  color: #6b7280;
+  background: #f3f4f6;
+}
+
+.status-chip.online {
+  color: #065f46;
+  background: #d1fae5;
+  border-color: #a7f3d0;
+}
+
+.status-chip.reconnecting {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fde68a;
+}
+
+.hint {
+  margin: 10px 0 0;
+  color: #6b7280;
+  font-size: 0.95rem;
 }
 
 /* --- Fila de arquivos --- */

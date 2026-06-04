@@ -37,6 +37,7 @@ const sendQueueContainer    = document.getElementById("sendQueueContainer");
 const sendQueueEl           = document.getElementById("sendQueue");
 const receiveQueueContainer = document.getElementById("receiveQueueContainer");
 const receiveQueueEl        = document.getElementById("receiveQueue");
+const connectionStatusEl    = document.getElementById("connectionStatus");
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 function log(msg) { statusEl.innerText = msg; }
@@ -44,6 +45,27 @@ function log(msg) { statusEl.innerText = msg; }
 function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(2) + " MB"; }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
+
+
+/** 
+ * Atualiza o chip de status de conexão com texto e cor apropriados. 
+* Ex: "Conectado" (verde), "Reconectando..." (amarelo), "Desconectado" (vermelho).
+ * @param {string} text 
+ */
+function updateConnectionStatus(text) {
+  if (!connectionStatusEl) return;
+
+  connectionStatusEl.innerText = text;
+  connectionStatusEl.className = "status-chip";
+
+  if (text.toLowerCase().includes("conectado")) {
+    connectionStatusEl.classList.add("online");
+  } else if (text.toLowerCase().includes("reconect")) {
+    connectionStatusEl.classList.add("reconnecting");
+  } else {
+    connectionStatusEl.classList.add("offline");
+  }
+}
 
 /**
  * Cria um <li> na fila visual e retorna a referência.
@@ -99,12 +121,19 @@ async function connect() {
 
   socket.on("connect", async () => {
     log("Conectado ao servidor");
+    updateConnectionStatus("Conectado");
     socket.emit("join-room", room);
     await initPeer(room);
   });
 
+  socket.on("disconnect", () => {
+    log("Desconectado do servidor");
+    updateConnectionStatus("Desconectado");
+  });
+
   socket.on("reconnect", async () => {
     log("Reconectado 🔄");
+    updateConnectionStatus("Reconectado");
     socket.emit("join-room", room);
     await resetPeer(room);
   });

@@ -7,44 +7,57 @@
 </head>
 <body>
 
-<h2>📁 Transferência P2P (Socket.IO)</h2>
+<div class="app-shell">
+    <header class="hero">
+      <h1>📁 Transferência P2P</h1>
+      <p>Envie vários arquivos de forma rápida entre navegadores usando WebRTC e Socket.IO.</p>
+    </header>
 
-<input type="text" id="room" placeholder="Sala">
-<button onclick="connect()">Conectar</button>
+    <section class="card">
+      <div class="card-header">
+        <span>Conexão</span>
+        <span id="connectionStatus" class="status-chip offline">Desconectado</span>
+      </div>
+      <div class="form-row">
+        <input type="text" id="room" placeholder="Nome da sala">
+        <button id="connectBtn" onclick="connect()" class="primary">Conectar</button>
+      </div>
+    </section>
 
-<br><br>
+    <section class="card">
+      <div class="card-header"><span>Enviar arquivos</span></div>
+      <div class="form-row">
+        <input type="file" id="fileInput" multiple>
+        <button onclick="sendFiles()" class="primary">Enviar</button>
+      </div>
+      <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
+      <!-- Fila de envio -->
+      <div id="sendQueueContainer" style="display:none;">
+        <h3>📤 Fila de Envio</h3>
+        <ul id="sendQueue" class="file-queue"></ul>
+      </div>
 
-<!-- multiple adicionado aqui -->
-<input type="file" id="fileInput" multiple>
-<button onclick="sendFiles()">Enviar</button>
+      <!-- Fila de recebimento -->
+      <div id="receiveQueueContainer" style="display:none;">
+        <h3>📥 Fila de Recebimento</h3>
+        <ul id="receiveQueue" class="file-queue"></ul>
+      </div>
 
-<br><br>
+      <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
+      <div id="acceptContainer" style="display: none; border: 2px solid #4CAF50; padding: 15px; border-radius: 8px; margin: 10px 0;">
+        <p>📥 Recebimento aguardando:</p>
+        <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
+        <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
+        <button id="acceptBtn" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
+      </div>
+    </section>
 
-<!-- Fila de envio -->
-<div id="sendQueueContainer" style="display:none;">
-  <h3>📤 Fila de Envio</h3>
-  <ul id="sendQueue" class="file-queue"></ul>
+    <section class="card">
+      <button onclick="downloadAll()">Baixar Todos</button>
+
+      <p id="status"></p>
+    </section>
 </div>
-
-<!-- Fila de recebimento -->
-<div id="receiveQueueContainer" style="display:none;">
-  <h3>📥 Fila de Recebimento</h3>
-  <ul id="receiveQueue" class="file-queue"></ul>
-</div>
-
-<!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
-<div id="acceptContainer" style="display: none; border: 2px solid #4CAF50; padding: 15px; border-radius: 8px; margin: 10px 0;">
-  <p>📥 Recebimento aguardando:</p>
-  <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
-  <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
-  <button id="acceptBtn" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
-</div>
-
-<br>
-
-<button onclick="downloadAll()">Baixar Todos</button>
-
-<p id="status"></p>
 
 <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
 <script src="app.js"></script>
