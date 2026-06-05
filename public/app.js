@@ -186,6 +186,8 @@ async function createOffer(room) {
 
 // ─── Recebimento ─────────────────────────────────────────────────────────────
 async function setupDataChannel() {
+  log("Tentando abrir o canal de dados... ⏳");
+  
   dataChannel.onopen = () => log("Canal aberto 🚀");
 
   dataChannel.onmessage = async (event) => {
