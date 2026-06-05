@@ -116,6 +116,18 @@ button.primary {
   border-color: #a7f3d0;
 }
 
+.status-chip.configuring {
+  color: #92400e;
+  background: #fef3c7;
+  border-color: #fde68a;
+}
+
+.status-chip.ready {
+    color: #065f46;
+    background: #d1fae5;
+    border-color: #a7f3d0;
+}
+
 .status-chip.reconnecting {
   color: #92400e;
   background: #fef3c7;

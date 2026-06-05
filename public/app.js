@@ -60,6 +60,10 @@ function updateConnectionStatus(text) {
 
   if (text.toLowerCase().includes("conectado")) {
     connectionStatusEl.classList.add("online");
+  } else if (text.toLowerCase().includes("abrindo o canal de dados")) {
+    connectionStatusEl.classList.add("configuring");
+  } else if (text.toLowerCase().includes("canal de dados aberto")) {
+    connectionStatusEl.classList.add("ready");
   } else if (text.toLowerCase().includes("reconect")) {
     connectionStatusEl.classList.add("reconnecting");
   } else {
@@ -186,9 +190,19 @@ async function createOffer(room) {
 
 // ─── Recebimento ─────────────────────────────────────────────────────────────
 async function setupDataChannel() {
-  log("Tentando abrir o canal de dados... ⏳");
+
+  log("Abrindo o canal de dados...");
+  updateConnectionStatus("Abrindo o canal de dados");
+
+  dataChannel.onopen = () => { 
+    log("Canal aberto 🚀") 
+    updateConnectionStatus("Canal de dados aberto");
+  };
   
-  dataChannel.onopen = () => log("Canal aberto 🚀");
+  dataChannel.onclose = () => {
+    log("Canal fechado");
+    updateConnectionStatus("Canal de dados fechado");
+  };
 
   dataChannel.onmessage = async (event) => {
     // ── Mensagem de texto (metadata / confirmação) ──
