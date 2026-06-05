@@ -112,7 +112,7 @@ const config = {
 async function connect() {
   const room = document.getElementById("room").value;
 
-  socket = io("http://localhost:3000", {
+  socket = io("https://webrtc-file-transfer-yt6p.onrender.com", {
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
