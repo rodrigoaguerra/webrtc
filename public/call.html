@@ -239,7 +239,7 @@
     <div class="controls">
       <div>
         <label>Servidor WebSocket</label>
-        <input id="srv" value="ws://localhost:3000" />
+        <input id="srv" value="https://webrtc-file-transfer-yt6p.onrender.com" />
       </div>
       <div>
         <label>Sala</label>
@@ -300,7 +300,7 @@ function setDot(id, state) {   // state: 'green'|'red'|'yellow'|''
 }
 
 /* ── State ── */
-let ws = null, pc = null, localStream = null;
+let pc = null, localStream = null;
 let currentRoom = '';
 
 /* ── ICE config ── */
@@ -313,8 +313,8 @@ const iceConfig = {
    Protocolo: JSON com campo "event"
    ──────────────────────────────────────────── */
 function send(event, payload = {}) {
-  if (!ws || ws.readyState !== WebSocket.OPEN) return;
-  ws.send(JSON.stringify({ event, ...payload }));
+  if (!socket || !socket.connected) return;
+  socket.emit(event, payload);
 }
 
 let socket;
@@ -332,7 +332,7 @@ function connect() {
     setDot('ws', 'green');
     log('Socket.IO conectado!', 'success');
 
-    socket.emit('join-room', { room: currentRoom });
+    socket.emit('join-room', currentRoom);
 
     setDot('room', 'green');
     log(`Entrou na sala "${currentRoom}"`, 'success');
