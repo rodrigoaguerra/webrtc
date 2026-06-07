@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <title>WebRTC + Socket.IO</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+
+<div class="shell">
+
+  <header>
+    <div class="logo">📁</div>
+    <div>
+      <h1>WebRTC · Transferência P2P</h1>
+      <p>Node.js Socket.IO backend &nbsp;·&nbsp; Socket.IO frontend</p>
+    </div>
+  </header>
+
+  <div class="card">
+    <div class="card-title">Status</div>
+    <div class="status-row">
+      <div class="badge"><span class="dot" id="dot-ws"></span> Socket.IO</div>
+      <div class="badge"><span class="dot" id="dot-room"></span> Sala</div>
+      <div class="badge"><span class="dot" id="dot-peer"></span> Peer</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Conexão</div>
+    <div class="controls">
+      <div>
+        <label>Servidor Socket.IO</label>
+        <input id="srv" value="https://webrtc-file-transfer-yt6p.onrender.com" />
+      </div>
+      <div>
+        <label>Sala</label>
+        <input id="room" value="sala-01" />
+      </div>
+      <button class="btn btn-primary" id="btn-connect">Conectar</button>
+    </div>
+  </div>
+
+  <section class="card">
+    <div class="card-title"><span>Enviar arquivos</span></div>
+    <div class="controls">
+      <div>
+        <label>Arquivos</label>
+        <input id="fileInput" type="file" multiple disabled />
+      </div>
+      <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
+    </div>
+    <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
+  </section>
+
+  <section class="card">
+    <div class="card-title"><span>Fila de Envio / Recebimento</span></div>
+    
+    <!-- Fila de envio -->
+    <div id="sendQueueContainer" style="display:none;">
+      <h3>📤 Fila de Envio</h3>
+      <ul id="sendQueue" class="file-queue"></ul>
+    </div>
+
+    <!-- Fila de recebimento -->
+    <div id="receiveQueueContainer" style="display:none;">
+      <h3>📥 Fila de Recebimento</h3>
+      <ul id="receiveQueue" class="file-queue"></ul>
+    </div>
+
+    <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
+    <div id="acceptContainer" style="display: none; border: 2px solid #4CAF50; padding: 15px; border-radius: 8px; margin: 10px 0;">
+      <p>📥 Recebimento aguardando:</p>
+      <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
+      <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
+      <button id="acceptBtn" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
+    </div>
+
+    <div id="downloadContainer" style="display:none; margin-top: 20px;">
+      <button id="btn-download" class="btn btn-secondary" style="margin-top: 15px;">Baixar Todos</button>
+    </div>
+  </section>
+
+  <div class="card">
+    <div class="card-title">Log</div>
+    <div class="log" id="log"></div>
+  </div>
+
+</div>
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script src="./app.js"></script>
+</body>
+</html>

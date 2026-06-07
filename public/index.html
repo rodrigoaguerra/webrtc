@@ -1,65 +1,94 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-  <meta charset="UTF-8">
-  <title>WebRTC + Socket.IO</title>
-  <link rel="stylesheet" href="./public/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebRTC Hub</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./public/style.css" />
 </head>
 <body>
+  <div class="wrapper">
 
-<div class="app-shell">
-    <header class="hero">
-      <h1>📁 Transferência P2P</h1>
-      <p>Envie vários arquivos de forma rápida entre navegadores usando WebRTC e Socket.IO.</p>
+    <header>
+      <div class="badge">WebRTC Hub — Socket.io</div>
+      <h1>Módulos <span>em tempo real</span></h1>
+      <p class="subtitle">
+        Aplicações peer-to-peer construídas com WebRTC e Socket.io.
+        Selecione um módulo para acessá-lo.
+      </p>
     </header>
 
-    <section class="card">
-      <div class="card-header">
-        <span>Conexão</span>
-        <span id="connectionStatus" class="status-chip offline">Desconectado</span>
-      </div>
-      <div class="form-row">
-        <input type="text" id="room" placeholder="Nome da sala">
-        <button id="connectBtn" onclick="connect()" class="primary">Conectar</button>
-      </div>
-    </section>
+    <div class="divider">
+      <span class="divider-label">Aplicações disponíveis</span>
+      <span class="divider-line"></span>
+    </div>
 
-    <section class="card">
-      <div class="card-header"><span>Enviar arquivos</span></div>
-      <div class="form-row">
-        <input type="file" id="fileInput" multiple>
-        <button onclick="sendFiles()" class="primary">Enviar</button>
+    <div class="cards">
+
+      <!-- Video -->
+      <a class="card" href="./public/video/index.html">
+        <div class="card-inner">
+          <div class="icon-box">
+            <svg viewBox="0 0 24 24">
+              <path d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M3 8a2 2 0 012-2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2V8z"/>
+            </svg>
+          </div>
+          <div class="card-content">
+            <div class="card-meta">
+              <span class="card-path">public/video/index.html</span>
+              <span class="card-tag">Live</span>
+            </div>
+            <h2>Videochamada</h2>
+            <p>
+              Comunicação de vídeo e áudio em tempo real entre peers via WebRTC.
+              Suporte a múltiplos participantes com sinalização gerenciada pelo Socket.io.
+            </p>
+          </div>
+          <span class="card-arrow">
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </span>
+        </div>
+      </a>
+
+      <!-- Transfer -->
+      <a class="card" href="./public/transfer/index.html">
+        <div class="card-inner">
+          <div class="icon-box">
+            <svg viewBox="0 0 24 24">
+              <path d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M16 12l-4 4-4-4M12 16V4"/>
+            </svg>
+          </div>
+          <div class="card-content">
+            <div class="card-meta">
+              <span class="card-path">public/transfer/index.html</span>
+              <span class="card-tag">P2P</span>
+            </div>
+            <h2>Transferência de Arquivos</h2>
+            <p>
+              Envio direto de arquivos entre navegadores sem passar pelo servidor,
+              utilizando RTCDataChannel para transferência rápida e segura peer-to-peer.
+            </p>
+          </div>
+          <span class="card-arrow">
+            <svg viewBox="0 0 24 24"><path d="M5 12h14M12 5l7 7-7 7"/></svg>
+          </span>
+        </div>
+      </a>
+
+    </div>
+
+    <footer>
+      <span class="footer-left">// stack</span>
+      <div class="footer-stack">
+        <span class="pill">WebRTC</span>
+        <span class="pill">Socket.io</span>
+        <span class="pill">Node.js</span>
       </div>
-      <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
-      <!-- Fila de envio -->
-      <div id="sendQueueContainer" style="display:none;">
-        <h3>📤 Fila de Envio</h3>
-        <ul id="sendQueue" class="file-queue"></ul>
-      </div>
+    </footer>
 
-      <!-- Fila de recebimento -->
-      <div id="receiveQueueContainer" style="display:none;">
-        <h3>📥 Fila de Recebimento</h3>
-        <ul id="receiveQueue" class="file-queue"></ul>
-      </div>
-
-      <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
-      <div id="acceptContainer" style="display: none; border: 2px solid #4CAF50; padding: 15px; border-radius: 8px; margin: 10px 0;">
-        <p>📥 Recebimento aguardando:</p>
-        <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
-        <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
-        <button id="acceptBtn" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
-      </div>
-    </section>
-
-    <section class="card">
-      <button onclick="downloadAll()">Baixar Todos</button>
-
-      <p id="status"></p>
-    </section>
-</div>
-
-<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-<script src="./public/app.js"></script>
+  </div>
 </body>
 </html>

@@ -46,29 +46,24 @@ function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(2) + " MB"; }
 
 function uid() { return Math.random().toString(36).slice(2, 9); }
 
+const $ = id => document.getElementById(id);
+const now = () => new Date().toLocaleTimeString('pt-BR', { hour12: false });
 
-/** 
- * Atualiza o chip de status de conexão com texto e cor apropriados. 
-* Ex: "Conectado" (verde), "Reconectando..." (amarelo), "Desconectado" (vermelho).
- * @param {string} text 
- */
-function updateConnectionStatus(text) {
-  if (!connectionStatusEl) return;
+function log(msg, type = '') {
+  const line = document.createElement('div');
+  line.className = 'log-line';
+  const icons = { success:'✅', error:'❌', warn:'⚠️', info:'ℹ️' };
+  line.innerHTML = `
+    <span class="log-time">${now()}</span>
+    <span class="log-icon">${icons[type] || '·'}</span>
+    <span class="log-msg ${type}">${msg}</span>`;
+  $('log').appendChild(line);
+  $('log').scrollTop = 9999;
+}
 
-  connectionStatusEl.innerText = text;
-  connectionStatusEl.className = "status-chip";
-
-  if (text.toLowerCase().includes("conectado")) {
-    connectionStatusEl.classList.add("online");
-  } else if (text.toLowerCase().includes("abrindo o canal de dados")) {
-    connectionStatusEl.classList.add("configuring");
-  } else if (text.toLowerCase().includes("canal de dados aberto")) {
-    connectionStatusEl.classList.add("ready");
-  } else if (text.toLowerCase().includes("reconect")) {
-    connectionStatusEl.classList.add("reconnecting");
-  } else {
-    connectionStatusEl.classList.add("offline");
-  }
+function setDot(id, state) {
+  const d = $(`dot-${id}`);
+  d.className = 'dot ' + state;
 }
 
 /**
@@ -97,6 +92,11 @@ function setItemStatus(li, status) {
   li.querySelector(".file-icon").textContent = icons[status] ?? "📄";
 }
 
+
+function setItemSize(li, text) {
+  li.querySelector(".file-size").textContent = text;
+}
+
 function setItemProgress(li, pct) {
   li.querySelector(".file-progress-bar").style.width = pct + "%";
 }
@@ -114,52 +114,96 @@ const config = {
 };
 
 async function connect() {
-  const room = document.getElementById("room").value;
-
-  socket = io("https://webrtc-file-transfer-yt6p.onrender.com", {
+  const url = $('srv').value.trim();
+  const room = $('room').value.trim();
+ 
+  socket = io(url, {
     reconnection: true,
     reconnectionAttempts: Infinity,
     reconnectionDelay: 1000,
     reconnectionDelayMax: 5000
   });
 
+  setDot('ws', 'yellow');
+  log(`Conectando em ${url}…`, 'info');
+
   socket.on("connect", async () => {
-    log("Conectado ao servidor");
-    updateConnectionStatus("Conectado");
+    setDot('ws', 'green');
+    log('Socket.IO conectado!', 'success');
+
     socket.emit("join-room", room);
+
+    setDot('room', 'green');
+    log(`Entrou na sala "${room}"`, 'success');
+
+    $('btn-connect').disabled = true;
+    
     await initPeer(room);
   });
 
-  socket.on("disconnect", () => {
-    log("Desconectado do servidor");
-    updateConnectionStatus("Desconectado");
-  });
-
-  socket.on("reconnect", async () => {
-    log("Reconectado 🔄");
-    updateConnectionStatus("Reconectado");
-    socket.emit("join-room", room);
-    await resetPeer(room);
-  });
-
   socket.on("offer", async (offer) => {
-    await pc.setRemoteDescription(offer);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    socket.emit("answer", { answer, room });
+    log('Offer recebida — respondendo…', 'info');
+    try {
+      await pc.setRemoteDescription(offer);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit("answer", { answer, room });
+    } catch (err) {
+      log(`Erro ao processar Offer: ${err.message}`, 'error');
+    }
   });
 
   socket.on("answer", async (answer) => {
-    await pc.setRemoteDescription(answer);
+    log('Answer recebida', 'info');
+    try {
+      await pc.setRemoteDescription(answer);
+    } catch (err) {
+      log(`Erro ao aplicar Answer: ${err.message}`, 'error');
+    }
   });
 
   socket.on("candidate", async (candidate) => {
-    await pc.addIceCandidate(candidate);
+    if (pc && candidate) {
+      try {
+        await pc.addIceCandidate(candidate);
+        log('ICE candidate adicionado', 'info');
+      } catch (err) {
+        log(`Erro ao adicionar ICE: ${err.message}`, 'error');
+      }
+    }
+  });
+
+  socket.on('disconnect', () => {
+    setDot('ws', 'red');
+    setDot('room', 'red');
+    log('Socket desconectado', 'error');
+
+    $('btn-connect').disabled = false;
+  });
+
+  socket.on("reconnect", async () => {
+    log("Socket.IO reconectado 🔄", 'success');
+    setDot('ws', 'green');
+    
+    socket.emit("join-room", room);
+    
+    setDot('room', 'green');
+    log(`Entrou na sala "${room}"`, 'success');
+
+    $('btn-connect').disabled = true;
+    await resetPeer(room);
+  });
+
+  socket.on('connect_error', () => {
+    log('Erro de conexão no Socket.IO', 'error');
+    setDot('ws', 'red');
   });
 }
 
 async function initPeer(room) {
   pc = new RTCPeerConnection(config);
+  setDot('peer', 'yellow');
+  log('PeerConnection criada', 'info');
   dataChannel = pc.createDataChannel("file");
   await setupDataChannel();
 
@@ -171,6 +215,21 @@ async function initPeer(room) {
   pc.onicecandidate = (event) => {
     if (event.candidate) {
       socket.emit("candidate", { candidate: event.candidate, room });
+    }
+  };
+
+  pc.ontrack = ({ streams }) => {
+    setDot('peer', 'green');
+    log('Stream remoto recebido 🎉', 'success');
+  };
+
+  pc.onconnectionstatechange = () => {
+    log(`Peer state: ${pc.connectionState}`, 'info');
+    if (pc.connectionState === 'connected') {
+      setDot('peer', 'green');
+    }
+    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') {
+      setDot('peer', 'red');
     }
   };
 
@@ -191,17 +250,18 @@ async function createOffer(room) {
 // ─── Recebimento ─────────────────────────────────────────────────────────────
 async function setupDataChannel() {
 
-  log("Abrindo o canal de dados...");
-  updateConnectionStatus("Abrindo o canal de dados");
-
   dataChannel.onopen = () => { 
-    log("Canal aberto 🚀") 
-    updateConnectionStatus("Canal de dados aberto");
+    log("Canal aberto 🚀", 'success');
+    setDot('peer', 'green');
+    $('fileInput').disabled = false;
+    $('btn-send').disabled = false;
   };
   
   dataChannel.onclose = () => {
-    log("Canal fechado");
-    updateConnectionStatus("Canal de dados fechado");
+    log("Canal fechado ❌", 'error');
+    setDot('peer', 'red');
+    $('fileInput').disabled = true;
+    $('btn-send').disabled = true;
   };
 
   dataChannel.onmessage = async (event) => {
@@ -214,7 +274,7 @@ async function setupDataChannel() {
         const meta = msg.data;
 
         if (meta.size > MAX_FILE_SIZE) {
-          log(`❌ ${meta.name} muito grande. Máximo: 1 GB`);
+          log(`❌ ${meta.name} muito grande. Máximo: 1 GB`, 'error');
           return;
         }
 
@@ -243,7 +303,7 @@ async function setupDataChannel() {
         currentReceiveEntry = entry;
 
         const sizeMB = fmtMB(meta.size);
-        log(`🔔 ${meta.name} (${sizeMB}) aguardando aceite...`);
+        log(`🔔 ${meta.name} (${sizeMB}) aguardando aceite...`, 'warn');
         document.getElementById("transferFileName").innerText = meta.name;
         document.getElementById("transferFileSize").innerText = sizeMB;
         acceptContainer.style.display = "block";
@@ -253,7 +313,7 @@ async function setupDataChannel() {
       }
 
       if (msg.type === "received") {
-        log("✅ Destinatário confirmou recebimento");
+        log("✅ Destinatário confirmou recebimento", 'success');
         // Avançar fila de envio (próximo arquivo)
         isSending = false;
         processNextSend();
@@ -273,8 +333,9 @@ async function setupDataChannel() {
     await writeChunk(entry, event.data);
 
     const progress = ((entry.receivedSize / entry.meta.size) * 100).toFixed(1);
+    setItemSize(entry.listItem, `${progress}% (${fmtMB(entry.receivedSize)}) de ${fmtMB(entry.meta.size)}`);
     setItemProgress(entry.listItem, progress);
-    log(`📥 ${entry.meta.name}: ${progress}% (${fmtMB(entry.receivedSize)})`);
+    // log(`📥 ${entry.meta.name}: ${progress}% (${fmtMB(entry.receivedSize)})`, 'info');
 
     if (entry.receivedSize >= entry.meta.size) {
       await finalizeReceive(entry);
@@ -289,7 +350,7 @@ async function writeChunk(entry, data) {
       await entry.writable.write(data);
     } catch (err) {
       console.error("Erro ao escrever:", err);
-      log("❌ Erro ao salvar");
+      log("❌ Erro ao salvar", 'error');
     }
   } else {
     entry.buffers.push(data);
@@ -300,14 +361,19 @@ async function writeChunk(entry, data) {
 async function finalizeReceive(entry) {
   if (entry.isStreaming && entry.writable) {
     await entry.writable.close();
-    log(`✅ ${entry.meta.name} salvo em disco`);
+    log(`✅ ${entry.meta.name} salvo em disco`, 'success');
   } else {
-    log(`✅ ${entry.meta.name} recebido (na memória)`);
+    log(`✅ ${entry.meta.name} recebido (na memória)`, 'success');
   }
 
   setItemStatus(entry.listItem, "done");
+  setItemSize(entry.listItem, `(completo) ${fmtMB(entry.meta.size)}`);
   setItemProgress(entry.listItem, 100);
 
+  // mostra botão de download se for em memória
+  if (!entry.isStreaming) {
+    $('downloadContainer').style.display = "block";
+  }
   dataChannel.send(JSON.stringify({ type: "received" }));
 }
 
@@ -330,7 +396,7 @@ if (acceptBtn) {
         });
         entry.writable = await handle.createWritable();
         entry.isStreaming = true;
-        log(`💾 Salvando em disco (streaming)`);
+        log(`💾 Salvando em disco (streaming)`, 'info');
       } catch (err) {
         if (err.name !== "AbortError") console.error(err);
         entry.isStreaming = false;
@@ -349,6 +415,7 @@ if (acceptBtn) {
       pendingChunks = [];
 
       const pct = ((entry.receivedSize / entry.meta.size) * 100).toFixed(1);
+      setItemSize(entry.listItem, `${pct}% (${fmtMB(entry.receivedSize)}) de ${fmtMB(entry.meta.size)}`);
       setItemProgress(entry.listItem, pct);
 
       if (entry.receivedSize >= entry.meta.size) {
@@ -362,16 +429,14 @@ if (acceptBtn) {
 }
 
 // ─── Envio ───────────────────────────────────────────────────────────────────
-
 /**
- * Ponto de entrada: lê os arquivos selecionados e adiciona à fila.
- * (Substitui o antigo sendFile())
+ * Oferece os arquivos selecionados para envio, adicionando à fila de envio.
  */
-function sendFiles() {
+function offerFiles() {
   const files = Array.from(document.getElementById("fileInput").files);
 
   if (files.length === 0) {
-    log("❌ Selecione ao menos um arquivo");
+    log("❌ Selecione ao menos um arquivo", 'error');
     return;
   }
 
@@ -379,10 +444,10 @@ function sendFiles() {
 
   for (const file of files) {
     if (file.size > MAX_FILE_SIZE) {
-      log(`❌ ${file.name} muito grande (máx 1 GB) — pulado`);
+      log(`❌ ${file.name} muito grande (máx 1 GB) — pulado`, 'error');
       continue;
     }
-
+    
     const li = createQueueItem(sendQueueEl, file.name, file.size);
     sendQueue.push({ file, id: uid(), listItem: li });
   }
@@ -390,6 +455,13 @@ function sendFiles() {
   // Limpar input para permitir re-seleção dos mesmos arquivos
   document.getElementById("fileInput").value = "";
 
+  dataChannel.send(JSON.stringify({ type: "offer-files", data: { total: files.length } }));
+}
+
+/**
+ * Ponto de entrada: lê os arquivos selecionados e adiciona à fila.
+ */
+function sendFiles() {
   processNextSend();
 }
 
@@ -407,7 +479,7 @@ function sendSingleFile({ file, listItem }) {
   setItemStatus(listItem, "active");
 
   const meta = { name: file.name, size: file.size, type: file.type };
-  log(`📤 Enviando: ${file.name} (${fmtMB(file.size)})`);
+  log(`📤 Enviando: ${file.name} (${fmtMB(file.size)})`, 'success');
 
   // Enviar metadados
   dataChannel.send(JSON.stringify({ type: "meta", data: meta }));
@@ -419,8 +491,9 @@ function sendSingleFile({ file, listItem }) {
   const sendNextChunk = () => {
     if (offset >= file.size) {
       setItemStatus(listItem, "done");
+      setItemSize(listItem, `(completo) ${fmtMB(offset)} de ${fmtMB(file.size)}`);
       setItemProgress(listItem, 100);
-      log(`📤 ${file.name} enviado — aguardando confirmação...`);
+      log(`📤 ${file.name} enviado — aguardando confirmação...`, 'warn');
       // isSending = false é definido quando chega msg "received"
       return;
     }
@@ -438,15 +511,17 @@ function sendSingleFile({ file, listItem }) {
     offset += e.target.result.byteLength;
 
     const pct = ((offset / file.size) * 100).toFixed(1);
+    const text = `📤 ${file.name}: ${pct}% (${fmtMB(offset)})`;
+    setItemSize(listItem, `${pct}% (${fmtMB(offset)} de ${fmtMB(file.size)})`);
     setItemProgress(listItem, pct);
-    log(`📤 ${file.name}: ${pct}% (${fmtMB(offset)})`);
+    // log(`📤 ${file.name}: ${pct}% (${fmtMB(offset)})`);
 
     sendNextChunk();
   };
 
   reader.onerror = () => {
     setItemStatus(listItem, "error");
-    log(`❌ Erro ao ler ${file.name}`);
+    log(`❌ Erro ao ler ${file.name}`, 'error');
     isSending = false;
     processNextSend();
   };
@@ -459,7 +534,7 @@ async function downloadAll() {
   const inMemory = receiveQueue.filter(e => !e.isStreaming && e.buffers.length > 0);
 
   if (inMemory.length === 0) {
-    log("❌ Nenhum arquivo disponível para baixar");
+    log("❌ Nenhum arquivo disponível para baixar", 'error');
     return;
   }
 
@@ -474,8 +549,13 @@ async function downloadAll() {
     setTimeout(() => URL.revokeObjectURL(url), 100);
   }
 
-  log(`✅ ${inMemory.length} arquivo(s) baixado(s)`);
+  log(`${inMemory.length} arquivo(s) baixado(s)`, 'success');
 }
 
-// Manter retrocompatibilidade com o botão "Baixar" original no HTML
-function download() { downloadAll(); }
+/* ── Bindings ── */
+$('btn-connect').addEventListener('click', connect);
+$('fileInput').addEventListener('change', offerFiles);
+$('btn-send') .addEventListener('click', sendFiles);
+$('btn-download').addEventListener('click', downloadAll);
+
+log('Pronto. Configure o servidor e clique em Conectar.', 'info');
