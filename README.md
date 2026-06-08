@@ -1,8 +1,9 @@
-# WebRTC File Transfer com Socket.IO
+# WebRTC - Módulos em tempo real
 
-Transferência de arquivos P2P usando WebRTC + Socket.IO.
+Aplicações peer-to-peer construídas com Node.js, Express.js, WebRTC e Socket.io. 
 
 ## 🚀 Rodar
+
 
 ### Backend
 ```bash
