@@ -47,7 +47,7 @@ function connect() {
     setDot('ws', 'green');
     log('Socket.IO conectado!', 'success');
 
-    socket.emit('join-room', currentRoom);
+    socket.emit('join-room', { room: currentRoom });
 
     setDot('room', 'green');
     log(`Entrou na sala "${currentRoom}"`, 'success');
@@ -57,7 +57,7 @@ function connect() {
   });
 
   // CORREÇÃO: O servidor envia diretamente a 'offer' crua, não um objeto empacotado
-  socket.on('offer', async (offer) => {
+  socket.on('offer', async ({ offer }) => {
     log('Offer recebida — respondendo…', 'info');
 
     try {
@@ -77,7 +77,7 @@ function connect() {
   });
 
   // CORREÇÃO: O servidor envia diretamente a 'answer' crua
-  socket.on('answer', async (answer) => {
+  socket.on('answer', async ({ answer }) => {
     log('Answer recebida', 'info');
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
@@ -87,7 +87,7 @@ function connect() {
   });
 
   // CORREÇÃO: O servidor envia diretamente o 'candidate' cru
-  socket.on('candidate', async (candidate) => {
+  socket.on('candidate', async ({ candidate }) => {
     if (pc && candidate) {
       try {
         await pc.addIceCandidate(new RTCIceCandidate(candidate));

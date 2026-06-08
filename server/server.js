@@ -6,29 +6,62 @@ const app = express();
 const server = http.createServer(app);
 
 const io = new Server(server, {
-  cors: {
-    origin: "*"
-  }
+  cors: { origin: "*" }
 });
 
 io.on("connection", (socket) => {
   console.log("🔌 Usuário conectado:", socket.id);
 
-  socket.on("join-room", (room) => {
+  // Agora recebe um objeto com o nome e a sala
+  socket.on("join-room", ({ room, username }) => {
     socket.join(room);
-    console.log(`📡 ${socket.id} entrou na sala ${room}`);
+    
+    // Guardamos o nome dentro da sessão do socket para usar depois
+    socket.username = username || "Anônimo";
+    
+    console.log(`📡 ${socket.username} (${socket.id}) entrou na sala ${room}`);
+    
+    // Avisa os antigos que o novo peer chegou, passando o ID E o Nome dele
+    socket.to(room).emit('user-connected', { id: socket.id, username: socket.username });
   });
 
-  socket.on("offer", ({ offer, room }) => {
-    socket.to(room).emit("offer", offer);
+  // Modificado para passar o "username" de quem está mandando a oferta
+  socket.on("offer", ({ offer, room, to = null }) => {
+    console.log(`📡 (${socket.id}) enviou oferta para ${to || room}`);
+    if (to) {
+      socket.to(to).emit("offer", { offer, from: socket.id, username: socket.username });
+    } else {
+      socket.to(room).emit("offer", { offer, from: socket.id, username: socket.username });
+    }
   });
 
-  socket.on("answer", ({ answer, room }) => {
-    socket.to(room).emit("answer", answer);
+  // Modificado para passar o "username" de quem está respondendo
+  socket.on("answer", ({ answer, room, to = null }) => {
+    console.log(`📡 (${socket.id}) enviou resposta para ${to || room}`);
+    if (to) {
+      socket.to(to).emit("answer", { answer, from: socket.id, username: socket.username });
+    } else {
+      socket.to(room).emit("answer", { answer, from: socket.id, username: socket.username });
+    }
   });
 
-  socket.on("candidate", ({ candidate, room }) => {
-    socket.to(room).emit("candidate", candidate);
+  socket.on("candidate", ({ candidate, room, to = null }) => {
+    console.log(`📡 (${socket.id}) enviou candidato para ${to || room}`);
+    if (to) {
+      socket.to(to).emit("candidate", { candidate, from: socket.id });
+    } else {
+      socket.to(room).emit("candidate", { candidate, from: socket.id });
+    }
+  });
+
+  socket.on("disconnecting", () => {
+    console.log("📡 Usuário desconectando:", socket.id);
+    socket.rooms.forEach(room => {
+      if (room !== socket.id) {
+        // Passa o nome de quem saiu para o log do grupo ficar bonito
+        socket.to(room).emit("user-disconnected", { id: socket.id, username: socket.username });
+      }
+    });
   });
 
   socket.on("disconnect", () => {
