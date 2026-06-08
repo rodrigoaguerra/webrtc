@@ -1,12 +1,17 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
+require("dotenv").config(); // 💥 Carrega as variáveis do arquivo .env no início do app
 
 const app = express();
 const server = http.createServer(app);
 
+// 💥 Configura a origem do CORS e a porta através do .env ou usa valores padrão caso não existam
+const corsOrigin = process.env.CORS_ORIGIN || "*";
+const PORT = process.env.PORT || 3000
+
 const io = new Server(server, {
-  cors: { origin: "*" }
+  cors: { origin: corsOrigin, methods: ["GET", "POST"] },
 });
 
 io.on("connection", (socket) => {
@@ -69,6 +74,6 @@ io.on("connection", (socket) => {
   });
 });
 
-server.listen(3000, () => {
-  console.log("🚀 Server rodando em http://localhost:3000");
+server.listen(PORT, () => {
+  console.log(`🚀 Server rodando em ${ process.env.SERVER_URL || 'http://localhost:' + PORT }`);
 });
