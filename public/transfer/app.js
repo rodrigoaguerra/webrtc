@@ -105,7 +105,7 @@ async function connect() {
   socket.on('connect', async () => {
     setDot('ws', 'green');
     log('Socket.IO conectado!', 'success');
-    socket.emit('join-room', { room });
+    socket.emit('join-room', room);
     setDot('room', 'green');
     log(`Entrou na sala "${room}"`, 'success');
     $('btn-connect').disabled = true;
@@ -114,7 +114,7 @@ async function connect() {
     await initPeer(room);
   });
 
-  socket.on('offer', async ({ offer }) => {
+  socket.on('offer', async (offer) => {
     log('Offer recebida — respondendo…', 'info');
     try {
       await pc.setRemoteDescription(offer);
@@ -124,12 +124,12 @@ async function connect() {
     } catch (err) { log(`Erro ao processar Offer: ${err.message}`, 'error'); }
   });
 
-  socket.on('answer', async ({ answer }) => {
+  socket.on('answer', async (answer) => {
     try { await pc.setRemoteDescription(answer); }
     catch (err) { log(`Erro ao aplicar Answer: ${err.message}`, 'error'); }
   });
 
-  socket.on('candidate', async ({ candidate }) => {
+  socket.on('candidate', async (candidate) => {
     if (pc && candidate) {
       try { await pc.addIceCandidate(candidate); }
       catch (err) { log(`Erro ICE: ${err.message}`, 'error'); }
@@ -144,7 +144,7 @@ async function connect() {
 
   socket.on('reconnect', async () => {
     setDot('ws', 'green');
-    socket.emit('join-room', { room });
+    socket.emit('join-room', room);
     setDot('room', 'green');
     $('btn-connect').disabled = true;
     await resetPeer(room);
