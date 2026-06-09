@@ -48,6 +48,10 @@
         <label>Arquivos</label>
         <input id="fileInput" type="file" multiple disabled />
       </div>
+      <div>
+        <label>Pasta</label>
+        <input id="folderInput" type="file" webkitdirectory multiple disabled />
+      </div>
       <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
     </div>
     <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
@@ -55,17 +59,21 @@
 
   <section class="card">
     <div class="card-title"><span>Fila de Envio / Recebimento</span></div>
-    
-    <!-- Fila de envio -->
-    <div id="sendQueueContainer" style="display:none;">
-      <h3>📤 Fila de Envio</h3>
-      <ul id="sendQueue" class="file-queue"></ul>
-    </div>
 
-    <!-- Fila de recebimento -->
-    <div id="receiveQueueContainer" style="display:none;">
-      <h3>📥 Fila de Recebimento</h3>
-      <ul id="receiveQueue" class="file-queue"></ul>
+    <div id="transferContainer">
+      <!-- Fila de envio -->
+      <div id="sendQueueContainer">
+        <h3>📦 Fila de Envio</h3>
+        <p id="emptySendQueue">Nenhum arquivo na fila</p>
+        <ul id="sendQueue" class="file-queue"></ul>
+      </div>
+
+      <!-- Fila de recebimento -->
+      <div id="receiveQueueContainer">
+        <h3>📥 Fila de Recebimento</h3>
+        <p id="emptyReceiveQueue">Nenhum arquivo na fila</p>
+        <ul id="receiveQueue" class="file-queue"></ul>
+      </div>
     </div>
 
     <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
@@ -73,12 +81,9 @@
       <p>📥 Recebimento aguardando:</p>
       <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
       <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
-      <button id="acceptBtn" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
+      <button id="btn-accept" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
     </div>
 
-    <div id="downloadContainer" style="display:none; margin-top: 20px;">
-      <button id="btn-download" class="btn btn-secondary" style="margin-top: 15px;">Baixar Todos</button>
-    </div>
   </section>
 
   <div class="card">

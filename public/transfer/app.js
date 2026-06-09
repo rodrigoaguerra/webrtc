@@ -18,13 +18,24 @@ let pendingChunksMap = {}; // { [id]: ArrayBuffer[] }
 
 // Quantos arquivos o remetente disse que vai enviar
 let expectedFilesCount = 0;
+
 // Tamanho total esperado dos arquivos
 let expectedTotalSize = 0;
+
 // Quantos arquivos já foram totalmente recebidos
 let receivedFilesCount = 0;
 
+// Modo de Envio
+let peerMode = 'memory';
+
+// Modo de Recepção
+let peerReceiveMode = 'memory'; // padrão conservador até receber confirmação
+
 // Controlador de abortos para envios em andamento, caso o remetente rejeite os arquivos
 let sendAbortController = null;
+
+// Pasta destino escolhida pelo usuário, caso File System Access API esteja disponível
+let targetDirHandle = null; 
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE = 1024 * 1024 * 1024 + 512; // 1.5 GB
@@ -38,7 +49,7 @@ const now = () => new Date().toLocaleTimeString('pt-BR', { hour12: false });
 function log(msg, type = '') {
   const line = document.createElement('div');
   line.className = 'log-line';
-  const icons = { success: '✅', error: '❌', warn: '⚠️', info: 'ℹ️' };
+  const icons = { success: '✅', error: '❌', warn: '⚠️', info: 'ℹ️', send: '📦', receive: '📥' };
   line.innerHTML = `
     <span class="log-time">${now()}</span>
     <span class="log-icon">${icons[type] || '·'}</span>
@@ -84,6 +95,11 @@ function updateProgress(entry) {
   setItemProgress(entry.listItem, pct);
 }
 
+function detectReceiveMode() {
+  const hasFileSystem = typeof window.showSaveFilePicker === 'function';
+  return hasFileSystem ? 'disk' : 'memory';
+}
+
 // ─── WebRTC config ───────────────────────────────────────────────────────────
 const rtcConfig = {
   iceServers: [
@@ -110,11 +126,22 @@ async function connect() {
     log(`Entrou na sala "${room}"`, 'success');
     $('btn-connect').disabled = true;
 
-    // Inicializa o Peer, mas NÃO chama createOffer automaticamente lá dentro
+    // Inicializa o peer SEM criar canal nem offer — aguarda ver se há peer na sala
     await initPeer(room);
   });
 
+  // Só dispara em quem já estava na sala (Lado A)
+  // quando o Lado B chega, o Lado A recebe esse evento e faz a offer
+  socket.on('user-connected', async () => {
+    log('Peer entrou na sala — iniciando offer…', 'info');
+    dataChannel = pc.createDataChannel('file');
+    dataChannel.binaryType = 'arraybuffer';
+    setupDataChannel();
+    await createOffer(room);
+  });
+
   socket.on('offer', async ({ offer }) => {
+    // Lado B: recebe a offer, NÃO cria canal — vai chegar via ondatachannel
     log('Offer recebida — respondendo…', 'info');
     try {
       await pc.setRemoteDescription(offer);
@@ -123,6 +150,7 @@ async function connect() {
       socket.emit('answer', { answer, room });
     } catch (err) { log(`Erro ao processar Offer: ${err.message}`, 'error'); }
   });
+
 
   socket.on('answer', async ({ answer }) => {
     try { await pc.setRemoteDescription(answer); }
@@ -159,14 +187,11 @@ async function connect() {
 // ─── Peer ─────────────────────────────────────────────────────────────────────
 async function initPeer(room) {
   pc = new RTCPeerConnection(rtcConfig);
-  setDot('peer', 'yellow');
   log('PeerConnection criada', 'info');
 
-  dataChannel = pc.createDataChannel('file');
-  dataChannel.binaryType = 'arraybuffer';
-  setupDataChannel();
-
+  // Lado B recebe o canal aqui
   pc.ondatachannel = (event) => {
+    // Se já tem um canal aberto, ignora
     dataChannel = event.channel;
     dataChannel.binaryType = 'arraybuffer';
     setupDataChannel();
@@ -178,11 +203,18 @@ async function initPeer(room) {
 
   pc.onconnectionstatechange = () => {
     log(`Peer: ${pc.connectionState}`, 'info');
-    if (pc.connectionState === 'connected')                              setDot('peer', 'green');
-    if (pc.connectionState === 'disconnected' || pc.connectionState === 'failed') setDot('peer', 'red');
+    if  (pc.connectionState === 'connecting') {
+      setDot('peer', 'yellow');
+      log('Estabelecendo conexão... ', 'warn');
+    } 
+    if (pc.connectionState === 'connected') {
+      setDot('peer', 'green');
+      log('Conexão estabelecida com sucesso 🚀', 'success');
+    }
+    if (pc.connectionState === 'disconnected' || 
+        pc.connectionState === 'failed') 
+        setDot('peer', 'red');
   };
-
-  createOffer(room);
 }
 
 async function resetPeer(room) {
@@ -199,18 +231,21 @@ async function createOffer(room) {
 // ─── DataChannel ──────────────────────────────────────────────────────────────
 function setupDataChannel() {
   dataChannel.onopen = () => {
-    log('Canal aberto 🚀', 'success');
-    
-    setDot('peer', 'green');
-    
     $('fileInput').disabled = false;
+    $('folderInput').disabled = false;
     $('btn-send').disabled  = false;
+
+    // Anuncia o modo de recepção ao peer
+    const mode = detectReceiveMode();
+    peerMode = mode;
+    dataChannel.send(JSON.stringify({ type: 'receive-mode', mode }));
   };
 
   dataChannel.onclose = () => {
     log('Canal fechado', 'error');
     setDot('peer', 'red');
     $('fileInput').disabled = true;
+    $('folderInput').disabled = true; 
     $('btn-send').disabled  = true;
   };
 
@@ -219,11 +254,18 @@ function setupDataChannel() {
     if (typeof event.data === 'string') {
       const msg = JSON.parse(event.data);
 
+      // Dentro do handler de mensagens:
+      if (msg.type === 'receive-mode') {
+        peerReceiveMode = msg.mode;
+        log(`Peer recebe por: ${peerReceiveMode}`, 'info');
+        return;
+      }
+
       if (msg.type === 'offer-files') {
         expectedFilesCount = msg.data.total;
         expectedTotalSize = msg.data.size;
         receivedFilesCount = 0; // Reseta para o novo lote de envios
-        log(`📦 Um novo lote de ${expectedFilesCount} arquivo(s) com ${fmtMB(expectedTotalSize)} está sendo enviado...`, 'info');
+        log(`Um novo lote de ${expectedFilesCount} arquivo(s) com ${fmtMB(expectedTotalSize)} está sendo enviado...`, 'send');
         return;
       }
 
@@ -234,6 +276,8 @@ function setupDataChannel() {
         // 🟥 Cancela imediatamente todos os envios em andamento
         if (sendAbortController) {
           sendAbortController.abort();
+          const lis = $('sendQueue').querySelectorAll('li');
+          for (const li of lis) setItemStatus(li, 'error');
           log('🛑 Todos os envios ativos foram interrompidos localmente.', 'error');
         }
         return;
@@ -241,12 +285,13 @@ function setupDataChannel() {
 
       if (msg.type === 'meta') {
         const meta = msg.data;
-        if (meta.size > MAX_FILE_SIZE) {
-          log(`❌ ${meta.name} muito grande (máx 1 GB)`, 'error');
+        if (meta.size > MAX_FILE_SIZE && peerMode === 'memory') {
+          log(`❌ ${meta.name} muito grande (máx 1.5 GB)`, 'error');
           return;
         }
 
-        $('receiveQueueContainer').style.display = '';
+        $('emptyReceiveQueue').style.display = 'none';
+
         const li = createQueueItem($('receiveQueue'), meta.name, meta.size);
 
         const entry = {
@@ -265,7 +310,7 @@ function setupDataChannel() {
       }
 
       if (msg.type === 'received') {
-        log('✅ Destinatário confirmou recebimento', 'success');
+        log(`Destinatário confirmou recebimento de ${msg.data.name} `, 'success');
       }
       return;
     }
@@ -297,7 +342,7 @@ function setupDataChannel() {
     await writeChunk(entry, chunk);
     updateProgress(entry);
     if (entry.receivedSize >= entry.meta.size) await finalizeReceive(entry);
-  };
+  };  
 }
 
 // ─── Fila de aceite ───────────────────────────────────────────────────────────
@@ -314,39 +359,67 @@ function showNextAccept() {
   setItemStatus(entry.listItem, 'pending');
 }
 
-$('acceptBtn').addEventListener('click', async () => {
+async function acceptEntry() {
   if (acceptQueue.length === 0) return;
 
-  const acceptBtn = $('acceptBtn');
+  const acceptBtn = $('btn-accept');
   acceptBtn.disabled  = true;
   acceptBtn.innerText = 'Processando...';
 
   const entry = acceptQueue.shift();
-  setItemStatus(entry.listItem, 'active');
+  if(peerMode === 'memory') {
+    setItemStatus(entry.listItem, 'active');
+  } else {
+    const lis = $('receiveQueue').querySelectorAll('li');
+    for (const li of lis) setItemStatus(li, 'active');
+  }
 
   // Abre pickers para TODOS os arquivos pendentes na fila de uma vez
   const allEntries = [entry, ...acceptQueue];
   acceptQueue = []; // esvazia — todos serão tratados agora
 
   for (const e of allEntries) {
+    // substitui o bloco do showSaveFilePicker:
     if (typeof window.showSaveFilePicker === 'function') {
       try {
-        const handle = await window.showSaveFilePicker({
-          suggestedName: e.meta.name,
-          types: [{ description: 'Arquivo', accept: { [e.meta.type || 'application/octet-stream']: [] } }]
-        });
-        e.writable   = await handle.createWritable();
-        e.isStreaming = true;
-        log(`💾 Salvando "${e.meta.name}" em disco`, 'info');
+        // Pede a pasta destino uma única vez para todo o lote
+        if (!targetDirHandle) {
+          targetDirHandle = await window.showDirectoryPicker();
+          log(`📁 Pasta destino: "${targetDirHandle.name}"`, 'info');
+        }
+
+        for (const e of allEntries) {
+          try {
+            // Recria subpastas se vier de uma pasta (relativePath = "pasta/sub/arq.txt")
+            const parts = (e.meta.relativePath || e.meta.name).split('/');
+            const fileName = parts.pop();
+
+            // Navega/cria subpastas recursivamente
+            let dir = targetDirHandle;
+            for (const part of parts) {
+              dir = await dir.getDirectoryHandle(part, { create: true });
+            }
+
+            const fileHandle = await dir.getFileHandle(fileName, { create: true });
+            e.writable   = await fileHandle.createWritable();
+            e.isStreaming = true;
+            log(`Salvando "${e.meta.name}" em disco 💾`, 'info');
+          } catch (err) {
+            e.isStreaming = false;
+            log(`"${e.meta.name}" ficará em memória ⚠️`, 'warn');
+          }
+        }
       } catch (err) {
         if (err.name !== 'AbortError') console.error(err);
-        e.isStreaming = false;
-        log(`⚠️ "${e.meta.name}" ficará em memória (picker cancelado)`, 'warn');
+        log(`Erro ao abrir pasta de destino: ${err.message}`, 'error');
+        dataChannel.send(JSON.stringify({ type: 'files-rejected', data: { error: 'Erro ao abrir pasta de destino' } }));
+        continue;
       }
     } else {
       e.isStreaming = false;
-      log(`⚠️ "${e.meta.name}" ficará em memória (sem picker)`, 'warn');
-      if (expectedTotalSize > MAX_FILE_SIZE) {
+      log(`${e.meta.name} ficará em memória (picker indisponível)`, 'warn');
+      //if (expectedTotalSize > MAX_FILE_SIZE) {
+      if (e.meta.size > MAX_FILE_SIZE) {
         log('Tamanho total de arquivos grande demais para ser processado em memória', 'warn');
         log('Considere usar um navegador moderno com suporte a File System Access API para salvar diretamente em disco', 'warn');
         log('Por enquanto, este arquivo será ignorado para evitar travar o navegador', 'warn');
@@ -367,8 +440,8 @@ $('acceptBtn').addEventListener('click', async () => {
   isAccepting = false;
   acceptBtn.disabled  = false;
   acceptBtn.innerText = 'Aceitar';
-  // Não chama showNextAccept — já processamos tudo
-});
+  // Não chama showNextAccept — já processamos tudo 
+}
 
 // ─── Escrita / finalização ────────────────────────────────────────────────────
 async function writeChunk(entry, data) {
@@ -381,55 +454,33 @@ async function writeChunk(entry, data) {
   entry.receivedSize += data.byteLength;
 }
 
-async function finalizeReceive(entry) {
-  if (entry.isStreaming && entry.writable) {
-    await entry.writable.close();
-    log(`✅ ${entry.meta.name} salvo em disco`, 'success');
-  } else {
-    log(`✅ ${entry.meta.name} recebido (memória)`, 'success');
-  }
-  setItemStatus(entry.listItem, 'done');
-  setItemSize(entry.listItem, `(completo) ${fmtMB(entry.meta.size)}`);
-  setItemProgress(entry.listItem, 100);
-  dataChannel.send(JSON.stringify({ type: 'received' }));
-
-  receivedFilesCount++;
-  
-  if (expectedFilesCount > 0 && receivedFilesCount === expectedFilesCount) {
-    log(`🎉 Todos os ${expectedFilesCount} arquivos foram recebidos com sucesso!`, 'success');
-    
-    if(!entry.isStreaming) { 
-      log('💡 Dica: Clique em "Baixar" para salvar os arquivos recebidos.', 'info');
-      $('downloadContainer').style.display = 'block';
-    }
-
-    // Reseta os contadores para segurança
-    expectedFilesCount = 0;
-    receivedFilesCount = 0;
-  }
-}
-
 // ─── Envio ────────────────────────────────────────────────────────────────────
 function offerFiles() {
   if (!dataChannel || dataChannel.readyState !== 'open') {
     log('⚠️ Canal ainda não está aberto', 'warn');
     return;
   }
-  const files = Array.from($('fileInput').files);
+
+  // Junta arquivos avulsos + arquivos da pasta
+  const fileList   = Array.from($('fileInput').files);
+  const folderList = Array.from($('folderInput').files);
+  const files      = [...fileList, ...folderList];
+  
   if (files.length === 0) return;
 
-  $('sendQueueContainer').style.display = '';
+  $('emptySendQueue').style.display = 'none';
+  
   for (const file of files) {
-    if (file.size > MAX_FILE_SIZE) {
-      log(`❌ ${file.name} muito grande (máx 1 GB) — pulado`, 'error');
+    if (file.size > MAX_FILE_SIZE && peerReceiveMode === 'memory') {
+      log(`❌ ${file.name} muito grande (máx 1.5 GB) — pulado`, 'error');
       continue;
     }
     const li = createQueueItem($('sendQueue'), file.name, file.size);
-    sendQueue.push({ file, id: uid(), listItem: li });
+    sendQueue.push({ file, id: uid(), listItem: li, relativePath: file.webkitRelativePath || file.name });
   }
 }
 
-function sendFiles() {
+async function sendFiles() {
   if (!dataChannel || dataChannel.readyState !== 'open') {
     log('⚠️ Canal ainda não está aberto', 'warn');
     return;
@@ -444,104 +495,142 @@ function sendFiles() {
   // Anuncia quantos arquivos virão
   dataChannel.send(JSON.stringify({ type: 'offer-files', data: { total: toSend.length, size: toSend.reduce((a, b) => a + b.file.size, 0) } }));
 
-  // Dispara todos em paralelo — cada um tem seu próprio id nos chunks
-  // Passamos o sinal de abortar para a função de envio
-  for (const entry of toSend) {
-    sendSingleFile(entry, sendAbortController.signal);
+  /**
+   * Modo de Recepção: 
+   *  - 'memory' : envia um por um, aguardando Promise
+   *  - 'disk'   : envia em paralelo, sem aguardar Promise
+   * Passamos o sinal de abortar para a função de envio
+   */
+  if (peerReceiveMode === 'memory') {
+    for (const file of toSend) {
+      await sendSingleFile(file, sendAbortController.signal); // um por vez, aguarda cada Promise
+    }
+  } else {
+    for (const file of toSend) {
+      sendSingleFile(file, sendAbortController.signal); // sem await — dispara em paralelo se quiser
+    }
   }
 
   // Limpa input e fila de envio
   $('fileInput').value = '';
 }
 
-function sendSingleFile({ file, listItem, id }, signal) {
-  setItemStatus(listItem, 'active');
-  log(`📤 Enviando: ${file.name} (${fmtMB(file.size)})`, 'info');
+function sendSingleFile({ file, listItem, id, relativePath }, signal) {
+  return new Promise((resolve) => {          // ← adiciona o wrapper
+    setItemStatus(listItem, 'active');
+    log(`Enviando: ${file.name} (${fmtMB(file.size)})`, 'send');
 
-  // Metadados com id para o receptor criar a entrada correta
-  dataChannel.send(JSON.stringify({ type: 'meta', data: { name: file.name, size: file.size, type: file.type, id } }));
+    dataChannel.send(JSON.stringify({ type: 'meta', data: { name: file.name, size: file.size, type: file.type, id, relativePath: relativePath } }));
 
-  let offset = 0;
-  const reader = new FileReader();
+    let offset = 0;
+    const reader = new FileReader();
 
-  const sendNextChunk = () => {
-    // 🟥 CHECAGEM CRÍTICA: Se foi cancelado, para o envio imediatamente
-    if (signal && signal.aborted) {
+    const sendNextChunk = () => {
+      if (signal && signal.aborted) {
+        setItemStatus(listItem, 'error');
+        setItemSize(listItem, '(cancelado pelo destinatário)');
+        resolve();                           // ← resolve mesmo no abort
+        return;
+      }
+
+      if (offset >= file.size) {
+        setItemStatus(listItem, 'done');
+        setItemSize(listItem, `(completo) ${fmtMB(file.size)}`);
+        setItemProgress(listItem, 100);
+        log(`${file.name} enviado`, 'send');
+        resolve();                           // ← resolve ao terminar
+        return;
+      }
+
+      if (dataChannel.bufferedAmount > 1024 * 1024) {
+        setTimeout(sendNextChunk, 50);
+        return;
+      }
+      reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
+    };
+
+    reader.onload = async (e) => {
+      if (signal && signal.aborted) { resolve(); return; }
+
+      const idBytes = new TextEncoder().encode(id);
+      const headerBuffer = new ArrayBuffer(4);
+      const headerView = new DataView(headerBuffer);
+      headerView.setUint32(0, idBytes.length, true);
+
+      const buf = await new Blob([headerBuffer, idBytes, e.target.result]).arrayBuffer();
+      dataChannel.send(buf);
+
+      offset += e.target.result.byteLength;
+      const pct = ((offset / file.size) * 100).toFixed(1);
+      setItemSize(listItem, `${pct}% · ${fmtMB(offset)} de ${fmtMB(file.size)}`);
+      setItemProgress(listItem, pct);
+      sendNextChunk();
+    };
+
+    reader.onerror = () => {
       setItemStatus(listItem, 'error');
-      setItemSize(listItem, '(cancelado pelo destinatário)');
-      return;
-    }
+      log(`❌ Erro ao ler ${file.name}`, 'error');
+      resolve();                             // ← resolve no erro também
+    };
 
-    if (offset >= file.size) {
-      setItemStatus(listItem, 'done');
-      setItemSize(listItem, `(completo) ${fmtMB(file.size)}`);
-      setItemProgress(listItem, 100);
-      log(`📤 ${file.name} enviado`, 'success');
-      return;
-    }
-    if (dataChannel.bufferedAmount > 1024 * 1024) {
-      setTimeout(sendNextChunk, 50);
-      return;
-    }
-    reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
-  };
-
-  reader.onload = async (e) => {
-    // Outra checagem caso o abort ocorra durante a leitura do FileReader
-    if (signal && signal.aborted) return;
-
-    const idBytes = new TextEncoder().encode(id);
-  
-    // Aloca 4 bytes para o cabeçalho e escreve explicitamente em Little-Endian
-    const headerBuffer = new ArrayBuffer(4);
-    const headerView = new DataView(headerBuffer);
-    headerView.setUint32(0, idBytes.length, true); // true = Little-Endian
-
-    // Junta: [Header (4 bytes)][ID Bytes][Chunk do Arquivo]
-    const buf = await new Blob([headerBuffer, idBytes, e.target.result]).arrayBuffer();
-    dataChannel.send(buf);
-
-    offset += e.target.result.byteLength;
-    const pct = ((offset / file.size) * 100).toFixed(1);
-    setItemSize(listItem, `${pct}% · ${fmtMB(offset)} de ${fmtMB(file.size)}`);
-    setItemProgress(listItem, pct);
     sendNextChunk();
-  };
-
-  reader.onerror = () => {
-    setItemStatus(listItem, 'error');
-    log(`❌ Erro ao ler ${file.name}`, 'error');
-  };
-
-  sendNextChunk();
+  });  
 }
 
-// ─── Download (memória) ───────────────────────────────────────────────────────
-async function downloadAll() {
-  const inMemory = receiveQueue.filter(e => !e.isStreaming && e.buffers.length > 0);
-  if (inMemory.length === 0) { log('❌ Nenhum arquivo para baixar', 'error'); return; }
-
-  for (const entry of inMemory) {
+// ─── Finalização de Recepção ───────────────────────────────────────────────────────
+async function finalizeReceive(entry) {
+  if (entry.isStreaming && entry.writable) {
+    await entry.writable.close();
+    log(`${entry.meta.name} salvo em disco`, 'success');
+  } else {
+    // Download automático assim que terminar
     const blob = new Blob(entry.buffers);
     const url  = URL.createObjectURL(blob);
-    const a    = Object.assign(document.createElement('a'), { href: url, download: entry.meta?.name || 'arquivo' });
-
+    const a    = Object.assign(document.createElement('a'), {
+      href: url,
+      download:   entry.meta.relativePath || entry.meta.name
+    });
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    entry.buffers = []; // libera memória imediatamente
 
-    await new Promise(resolve => setTimeout(resolve, 500));
-    URL.revokeObjectURL(url);
-    entry.buffers = []; // libera memória do array de buffers
+    log(`${entry.meta.name} baixado automaticamente`, 'receive');
   }
 
-  log(`${inMemory.length} arquivo(s) baixado(s)`, 'success');
+  setItemStatus(entry.listItem, 'done');
+  setItemSize(entry.listItem, `(completo) ${fmtMB(entry.meta.size)}`);
+  setItemProgress(entry.listItem, 100);
+  dataChannel.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name } }));
+
+  receivedFilesCount++;
+  
+  if (expectedFilesCount > 0 && receivedFilesCount === expectedFilesCount) {
+    log(`Todos os ${expectedFilesCount} arquivos foram recebidos com sucesso! 🎉`, 'success');
+    targetDirHandle = null; // ← libera para o próximo lote escolher nova pasta
+    // Reseta os contadores para segurança
+    expectedFilesCount = 0;
+    receivedFilesCount = 0;
+  }
 }
+
+// ─── Antes de sair verificar se upload / download estão em andamento ───────────────────────────────────────────────────────
+window.addEventListener('beforeunload', (e) => {
+  const enviando   = sendQueue.length > 0;
+  const recebendo  = receiveQueue.some(entry => entry.receivedSize < entry.meta?.size);
+
+  if (enviando || recebendo) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
 
 // ─── Bindings ─────────────────────────────────────────────────────────────────
 $('btn-connect') .addEventListener('click', connect);
 $('fileInput')   .addEventListener('change', offerFiles);
+$('folderInput').addEventListener('change', offerFiles);
 $('btn-send')    .addEventListener('click', sendFiles);
-$('btn-download').addEventListener('click', downloadAll);
+$('btn-accept')  .addEventListener('click', acceptEntry);
 
 log('Pronto. Configure o servidor e clique em Conectar.', 'info');

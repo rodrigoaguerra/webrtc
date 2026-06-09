@@ -154,8 +154,32 @@ input:focus { border-color: var(--accent); }
 .actions { display: flex; gap: .6rem; flex-wrap: wrap; }
 
 /* --- Fila de arquivos --- */
+#transferContainer {
+  display: flex;
+  width: 100%;
+  gap: 0; /* sem gap pra não estourar */
+}
+
 #sendQueueContainer,
-#receiveQueueContainer,
+#receiveQueueContainer {
+  width: 50%;
+  flex-shrink: 0;
+  min-width: 0;
+  
+  padding: 20px;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+}
+
+#emptySendQueue,
+#emptyReceiveQueue {
+  text-align: center;
+  margin: 10px 0 0;
+  color: #6b7280;
+  font-size: 0.95rem;
+}
+
+
 #acceptContainer,
 #downloadContainer {
   display: flex;
@@ -232,6 +256,22 @@ input:focus { border-color: var(--accent); }
 li.status-done .file-progress-bar { background: #4CAF50; width: 100%; }
 li.status-error .file-progress-bar { background: #f44336; }
 
+.btn-accept-inline {
+  display: none; /* começa oculto, showNextAccept ativa */
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  background: #22c55e;
+  color: #fff;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  flex-shrink: 0;
+  align-self: flex-end; /* canto inferior direito dentro do <li> */
+}
+
+.btn-accept-inline:hover { background: #16a34a; }
+
 /* ── Log ── */
 .log {
   background: #070b14;
@@ -254,3 +294,5 @@ li.status-error .file-progress-bar { background: #f44336; }
 .log-msg.error   { color: var(--red); }
 .log-msg.warn    { color: var(--yellow); }
 .log-msg.info    { color: var(--accent); }
+.log-msg.send    { color: var(--yellow); }
+.log-msg.receive { color: var(--green); }
