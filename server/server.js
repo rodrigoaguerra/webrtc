@@ -10,6 +10,9 @@ const server = http.createServer(app);
 const corsOrigin = process.env.CORS_ORIGIN || "*";
 const PORT = process.env.PORT || 3000
 
+// Rota que o ping vai chamar
+app.get('/ping', (req, res) => res.send('pong'));
+
 const io = new Server(server, {
   cors: { origin: corsOrigin, methods: ["GET", "POST"] },
 });

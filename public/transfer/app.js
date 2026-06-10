@@ -148,6 +148,9 @@ async function connect() {
     setDot('room', 'green');
     log(`Entrou na sala "${room}"`, 'success');
     $('btn-connect').disabled = true;
+
+    if(dataChannel && dataChannel.readyState === 'open') return;
+    
     await initPeer(room);
   });
 
@@ -190,8 +193,17 @@ async function connect() {
   socket.on('reconnect', async () => {
     setDot('ws', 'green');
     socket.emit('join-room', { room });
+    log(`Reconectado na sala "${room}"`, 'success');
     setDot('room', 'green');
     $('btn-connect').disabled = true;
+
+    // Canal vivo? Só rejunta a sala, não toca no peer
+    if (dataChannel && dataChannel.readyState === 'open') {
+      log('Canal WebRTC ainda ativo — mantendo conexão', 'info');
+      return;
+    }
+
+    // Canal morto: aí sim recria o peer
     await resetPeer(room);
   });
 
