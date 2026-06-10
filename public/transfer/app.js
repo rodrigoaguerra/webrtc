@@ -6,44 +6,37 @@ let dataChannel;
 // Fila de envio
 let sendQueue = [];
 
-// Fila de recebimento
-let receiveQueue = []; // { meta, id, listItem, buffers, receivedSize, isStreaming, writable }
-
-// Fila de aceite (um painel por vez)
-let acceptQueue   = []; // entradas aguardando aceite do usuário
-let isAccepting   = false; // true enquanto o painel está visível
+// Fila de recebimento — indexed por id para O(1)
+const receiveMap = new Map(); // id → entry
+let receiveQueue = [];
 
 // Chunks chegados antes do aceite, por id de arquivo
-let pendingChunksMap = {}; // { [id]: ArrayBuffer[] }
+// null = arquivo já aceito (chunks vão direto); Array = aguardando aceite
+const pendingChunksMap = new Map(); // id → ArrayBuffer[] | null
 
-// Quantos arquivos o remetente disse que vai enviar
+// Contadores de lote
 let expectedFilesCount = 0;
-
-// Tamanho total esperado dos arquivos
-let expectedTotalSize = 0;
-
-// Quantos arquivos já foram totalmente recebidos
+let expectedTotalSize  = 0;
 let receivedFilesCount = 0;
 
-// Modo de Envio
-let peerMode = 'memory';
+// Modos de operação
+let peerMode        = 'memory'; // modo local de recepção
+let peerReceiveMode = 'memory'; // modo do peer remoto (para decisão de envio)
 
-// Modo de Recepção
-let peerReceiveMode = 'memory'; // padrão conservador até receber confirmação
+// ACK por arquivo: resolve quando receptor confirmar cada arquivo
+const receivedAckResolvers = new Map(); // id → resolve
 
-// Confirmação de envio
-let receivedAckResolvers = {}; // { [id]: resolve } — aguarda confirmação do peer
-
-// Controlador de abortos para envios em andamento, caso o remetente rejeite os arquivos
+// Abort do lote de envio atual
 let sendAbortController = null;
 
-// Pasta destino escolhida pelo usuário, caso File System Access API esteja disponível
-let targetDirHandle = null; 
+// Handle da pasta destino (File System Access API)
+let targetDirHandle = null;
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
-const MAX_FILE_SIZE = 1024 * 1024 * 1024 + 512; // 1.5 GB
-// Alterado de 256 KB para 250 KB para dar espaço aos metadados do pacote binário
-const CHUNK_SIZE    = 250 * 1024;          // 250 KB
+const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
+const CHUNK_SIZE        = 250 * 1024;                // 250 KB
+const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
+const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -57,8 +50,7 @@ function log(msg, type = '') {
     <span class="log-time">${now()}</span>
     <span class="log-icon">${icons[type] || '·'}</span>
     <span class="log-msg ${type}">${msg}</span>`;
-  $('log').appendChild(line);
-  $('log').scrollTop = 9999;
+  $('log').prepend(line);
 }
 
 function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(2) + ' MB'; }
@@ -89,18 +81,17 @@ function setItemStatus(li, status) {
   li.querySelector('.file-icon').textContent = icons[status] ?? '📄';
 }
 
-function setItemSize(li, text)  { li.querySelector('.file-size').textContent = text; }
+function setItemSize(li, text) { li.querySelector('.file-size').textContent = text; }
 function setItemProgress(li, p) { li.querySelector('.file-progress-bar').style.width = p + '%'; }
 
 function updateProgress(entry) {
-  const pct = ((entry.receivedSize / entry.meta.size) * 100).toFixed(1);
+  const pct = Math.min(100, (entry.receivedSize / entry.meta.size) * 100).toFixed(1);
   setItemSize(entry.listItem, `${pct}% · ${fmtMB(entry.receivedSize)} de ${fmtMB(entry.meta.size)}`);
   setItemProgress(entry.listItem, pct);
 }
 
 function detectReceiveMode() {
-  const hasFileSystem = typeof window.showSaveFilePicker === 'function';
-  return hasFileSystem ? 'disk' : 'memory';
+  return typeof window.showDirectoryPicker === 'function' ? 'disk' : 'memory';
 }
 
 // ─── WebRTC config ───────────────────────────────────────────────────────────
@@ -116,7 +107,12 @@ async function connect() {
   const url  = $('srv').value.trim();
   const room = $('room').value.trim();
 
-  socket = io(url, { reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000, reconnectionDelayMax: 5000 });
+  socket = io(url, {
+    reconnection: true,
+    reconnectionAttempts: Infinity,
+    reconnectionDelay: 1000,
+    reconnectionDelayMax: 5000
+  });
 
   setDot('ws', 'yellow');
   log(`Conectando em ${url}…`, 'info');
@@ -128,13 +124,9 @@ async function connect() {
     setDot('room', 'green');
     log(`Entrou na sala "${room}"`, 'success');
     $('btn-connect').disabled = true;
-
-    // Inicializa o peer SEM criar canal nem offer — aguarda ver se há peer na sala
     await initPeer(room);
   });
 
-  // Só dispara em quem já estava na sala (Lado A)
-  // quando o Lado B chega, o Lado A recebe esse evento e faz a offer
   socket.on('user-connected', async () => {
     log('Peer entrou na sala — iniciando offer…', 'info');
     dataChannel = pc.createDataChannel('file');
@@ -144,7 +136,6 @@ async function connect() {
   });
 
   socket.on('offer', async ({ offer }) => {
-    // Lado B: recebe a offer, NÃO cria canal — vai chegar via ondatachannel
     log('Offer recebida — respondendo…', 'info');
     try {
       await pc.setRemoteDescription(offer);
@@ -153,7 +144,6 @@ async function connect() {
       socket.emit('answer', { answer, room });
     } catch (err) { log(`Erro ao processar Offer: ${err.message}`, 'error'); }
   });
-
 
   socket.on('answer', async ({ answer }) => {
     try { await pc.setRemoteDescription(answer); }
@@ -187,14 +177,12 @@ async function connect() {
   });
 }
 
-// ─── Peer ─────────────────────────────────────────────────────────────────────
+// ─── Peer ────────────────────────────────────────────────────────────────────
 async function initPeer(room) {
   pc = new RTCPeerConnection(rtcConfig);
   log('PeerConnection criada', 'info');
 
-  // Lado B recebe o canal aqui
   pc.ondatachannel = (event) => {
-    // Se já tem um canal aberto, ignora
     dataChannel = event.channel;
     dataChannel.binaryType = 'arraybuffer';
     setupDataChannel();
@@ -205,18 +193,11 @@ async function initPeer(room) {
   };
 
   pc.onconnectionstatechange = () => {
-    log(`Peer: ${pc.connectionState}`, 'info');
-    if  (pc.connectionState === 'connecting') {
-      setDot('peer', 'yellow');
-      log('Estabelecendo conexão... ', 'warn');
-    } 
-    if (pc.connectionState === 'connected') {
-      setDot('peer', 'green');
-      log('Conexão estabelecida com sucesso 🚀', 'success');
-    }
-    if (pc.connectionState === 'disconnected' || 
-        pc.connectionState === 'failed') 
-        setDot('peer', 'red');
+    const s = pc.connectionState;
+    log(`Peer: ${s}`, 'info');
+    if (s === 'connecting')                      setDot('peer', 'yellow');
+    if (s === 'connected')                       setDot('peer', 'green');
+    if (s === 'disconnected' || s === 'failed')  setDot('peer', 'red');
   };
 }
 
@@ -231,14 +212,14 @@ async function createOffer(room) {
   socket.emit('offer', { offer, room });
 }
 
-// ─── DataChannel ──────────────────────────────────────────────────────────────
+// ─── DataChannel ─────────────────────────────────────────────────────────────
 function setupDataChannel() {
   dataChannel.onopen = () => {
-    $('fileInput').disabled = false;
+    log('Canal aberto 🚀', 'success');
+    $('fileInput').disabled  = false;
     $('folderInput').disabled = false;
-    $('btn-send').disabled  = false;
 
-    // Anuncia o modo de recepção ao peer
+    // Anuncia modo de recepção local ao peer
     const mode = detectReceiveMode();
     peerMode = mode;
     dataChannel.send(JSON.stringify({ type: 'receive-mode', mode }));
@@ -247,149 +228,134 @@ function setupDataChannel() {
   dataChannel.onclose = () => {
     log('Canal fechado', 'error');
     setDot('peer', 'red');
-    $('fileInput').disabled = true;
-    $('folderInput').disabled = true; 
-    $('btn-send').disabled  = true;
+    $('fileInput').disabled  = true;
+    $('folderInput').disabled = true;
+    $('sendContainer').style.display = 'none';
+    $('btn-send').disabled = true;
   };
 
-  dataChannel.onmessage = async (event) => {
-    // ── Texto: meta ou confirmação ──────────────────────────────────────────
+  // Separação crítica: controle (síncrono) vs dados (async)
+  dataChannel.onmessage = (event) => {
     if (typeof event.data === 'string') {
-      const msg = JSON.parse(event.data);
+      handleControlMessage(JSON.parse(event.data)); // síncrono — nunca bloqueia a fila
+    } else {
+      handleChunk(event.data);                      // async — não aguardado intencionalmente
+    }
+  };
+}
 
-      // Dentro do handler de mensagens:
-      if (msg.type === 'receive-mode') {
-        peerReceiveMode = msg.mode;
-        log(`Peer recebe por: ${peerReceiveMode}`, 'info');
+// ─── Mensagens de controle (síncrono) ────────────────────────────────────────
+function handleControlMessage(msg) {
+  switch (msg.type) {
+
+    case 'receive-mode':
+      peerReceiveMode = msg.mode;
+      log(`Peer recebe em modo: ${peerReceiveMode}`, 'info');
+      break;
+
+    case 'offer-files':
+      expectedFilesCount = msg.data.total;
+      expectedTotalSize  = msg.data.size;
+      receivedFilesCount = 0;
+      log(`Lote de ${expectedFilesCount} arquivo(s) · ${fmtMB(expectedTotalSize)}`, 'send');
+      
+      if(peerMode === 'disk') {
+        showAcceptTransfer();
+      }
+      
+      break;
+
+    case 'files-rejected':
+      log(`Transferência rejeitada: ${msg.data.error}`, 'error');
+      if (sendAbortController) {
+        sendAbortController.abort();
+        $('sendQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'error'));
+        log('Envios interrompidos.', 'error');
+      }
+      break;
+
+    case 'meta': {
+      const meta = msg.data;
+      if (meta.size > MAX_FILE_SIZE && peerMode === 'memory') {
+        log(`❌ ${meta.name} grande demais para memória`, 'error');
         return;
       }
+      $('emptyReceiveQueue').style.display = 'none';
+      const li = createQueueItem($('receiveQueue'), meta.name, meta.size);
+      const entry = {
+        meta, id: meta.id, listItem: li,
+        buffers: [], receivedSize: 0,
+        isStreaming: false, writable: null,
+        finalized: false,
+        writeLock: Promise.resolve()
+      };
+      receiveMap.set(meta.id, entry);
+      receiveQueue.push(entry);
 
-      if (msg.type === 'offer-files') {
-        expectedFilesCount = msg.data.total;
-        expectedTotalSize = msg.data.size;
-        receivedFilesCount = 0; // Reseta para o novo lote de envios
-        log(`Um novo lote de ${expectedFilesCount} arquivo(s) com ${fmtMB(expectedTotalSize)} está sendo enviado...`, 'send');
-        return;
+      if (peerMode === 'memory') {
+        // Modo memória: aceita imediatamente, chunks vão direto
+        pendingChunksMap.set(meta.id, null); // null = aceito
+      } else {
+        // Modo disco: retém chunks até o usuário clicar Aceitar
+        pendingChunksMap.set(meta.id, []);
       }
-
-      if(msg.type === 'files-rejected') {
-        log(`O remetente rejeitou os arquivos: ${msg.data.error}`, 'error');
-        log('O remetente pode ter rejeitado os arquivos por serem grandes demais para processar em memória. Considere usar um navegador moderno com suporte a File System Access API para salvar diretamente em disco.', 'warn');
-        
-        // 🟥 Cancela imediatamente todos os envios em andamento
-        if (sendAbortController) {
-          sendAbortController.abort();
-          const lis = $('sendQueue').querySelectorAll('li');
-          for (const li of lis) setItemStatus(li, 'error');
-          log('🛑 Todos os envios ativos foram interrompidos localmente.', 'error');
-        }
-        return;
-      }
-
-      if (msg.type === 'meta') {
-        const meta = msg.data;
-
-        if (meta.size > MAX_FILE_SIZE && peerMode === 'memory') {
-          log(`❌ ${meta.name} muito grande (máx 1.5 GB)`, 'error');
-          return;
-        }
-
-        $('emptyReceiveQueue').style.display = 'none';
-
-        const li = createQueueItem($('receiveQueue'), meta.name, meta.size);
-
-        const entry = {
-          meta, id: meta.id, listItem: li,
-          buffers: [], receivedSize: 0, isStreaming: false, writable: null
-        };
-        
-        receiveQueue.push(entry);
-
-        // Reserva slot de chunks pendentes para este arquivo
-        pendingChunksMap[meta.id] = [];
-
-        if (peerMode === 'disk') {
-          // só enfileira para aceite manual no modo disk
-          acceptQueue.push(entry);
-          showAcceptTransfer();
-        } else {
-          // memory — aceita automaticamente, sem botão, sem painel
-          pendingChunksMap[entry.meta.id] = [];
-          // drena imediatamente — não tem nada ainda, mas já marca como aceito
-          delete pendingChunksMap[entry.meta.id]; // ← remove o bloqueio de chunks
-        }
-        return;
-      }
-
-      if (msg.type === 'received') {
-        log(`Destinatário confirmou recebimento de ${msg.data.name} `, 'success');
-        const resolve = receivedAckResolvers[msg.data.id];
-        if (resolve) {
-          resolve();
-          delete receivedAckResolvers[msg.data.id];
-        }
-        return;
-      }
-      return;
+      break;
     }
 
-    // ── Binário: chunk ──────────────────────────────────────────────────────
-    // Formato: [Uint32 idLen][id UTF-8][dados]
-    const buf   = event.data;
-    const view  = new DataView(buf);
-    
-    // Passamos 'true' como segundo parâmetro para ler em Little-Endian igual ao envio
-    const idLen = view.getUint32(0, true); 
-    
-    const idStr = new TextDecoder().decode(buf.slice(4, 4 + idLen));
-    const chunk = buf.slice(4 + idLen);
-
-    const entry = receiveQueue.find(e => e.meta.id === idStr);
-    if (!entry) {
-      console.warn(`Recebido chunk para ID desconhecido ou não inicializado: ${idStr}`);
-      return;
+    case 'received': {
+      log(`✅ Recebido confirmado: ${msg.data.name}`, 'success');
+      const resolve = receivedAckResolvers.get(msg.data.id);
+      if (resolve) {
+        resolve();
+        receivedAckResolvers.delete(msg.data.id);
+      }
+      break;
     }
+  }
+}
 
-    // Se este arquivo ainda aguarda aceite, guarda o chunk
-    if (pendingChunksMap[idStr]) {
-      pendingChunksMap[idStr].push(chunk);
-      return;
-    }
+// ─── Chunks binários (async, não bloqueia onmessage) ────────────────────────
+async function handleChunk(buf) {
+  const view  = new DataView(buf);
+  const idLen = view.getUint32(0, true);
+  const idStr = new TextDecoder().decode(buf.slice(4, 4 + idLen));
+  const chunk = buf.slice(4 + idLen);
 
-    // Arquivo já aceito — escreve direto
+  const entry = receiveMap.get(idStr);
+  if (!entry) { console.warn(`Chunk para ID desconhecido: ${idStr}`); return; }
+
+  const pending = pendingChunksMap.get(idStr);
+
+  if (Array.isArray(pending)) {
+    pending.push(chunk);
+    return;
+  }
+
+  // Fila sequencial: Garante que os chunks sejam escritos um após o outro
+  entry.writeLock = entry.writeLock.then(async () => {
     await writeChunk(entry, chunk);
     updateProgress(entry);
-    if (entry.receivedSize >= entry.meta.size) await finalizeReceive(entry);
-  };  
+    if (!entry.finalized && entry.receivedSize >= entry.meta.size) {
+      entry.finalized = true;
+      await finalizeReceive(entry);
+    }
+  }).catch(err => log(`Erro interno no fluxo do chunk: ${err.message}`, 'error'));
 }
 
-// ─── Fila de aceite ───────────────────────────────────────────────────────────
+// ─── Aceite de transferência ─────────────────────────────────────────────────
 function showAcceptTransfer() {
-  log(`🔔 (${fmtMB(expectedTotalSize)}) aguardando aceite...`, 'warn');
-  
-  $('transferFileName').innerText    = 'Aceite a transferência dos arquivos';
   $('transferFileSize').innerText    = fmtMB(expectedTotalSize);
-  $('acceptContainer').style.display = 'block';
-  
-  const lis = $('receiveQueue').querySelectorAll('li');
-  for (const li of lis) setItemStatus(li, 'pending');
+  $('acceptContainer').style.display = 'flex';
+  $('receiveQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'pending'));
+  log(`🔔 Aguardando aceite — ${fmtMB(expectedTotalSize)}`, 'warn');
 }
 
-// Aceita todos os arquivos pendentes na fila em mode: 'disk'
 async function acceptEntry() {
-  if (acceptQueue.length === 0) return;
-
   const acceptBtn = $('btn-accept');
   acceptBtn.disabled  = true;
   acceptBtn.innerText = 'Processando...';
 
-  const entry = acceptQueue.shift();
-  setItemStatus(entry.listItem, 'active');
-
-  const allEntries = [entry, ...acceptQueue];
-  acceptQueue = [];
-
-  // Pede a pasta destino uma única vez para todo o lote
+  // Pede pasta destino
   try {
     if (!targetDirHandle) {
       targetDirHandle = await window.showDirectoryPicker();
@@ -397,61 +363,125 @@ async function acceptEntry() {
     }
   } catch (err) {
     if (err.name !== 'AbortError') console.error(err);
-    log(`Erro ao abrir pasta destino: ${err.message}`, 'error');
-    dataChannel.send(JSON.stringify({ type: 'files-rejected', data: { error: 'Erro ao abrir pasta de destino' } }));
+    log(`Erro ao abrir pasta: ${err.message}`, 'error');
+    dataChannel.send(JSON.stringify({ type: 'files-rejected', data: { error: 'Pasta de destino não selecionada' } }));
     $('acceptContainer').style.display = 'none';
-    isAccepting = false;
     acceptBtn.disabled  = false;
-    acceptBtn.innerText = 'Aceitar';
+    acceptBtn.innerText = 'Aceitar e Salvar';
     return;
   }
 
-  for (const e of allEntries) {
+  // ── Fase 1: Mapeia estrutura de pastas e handles sequencialmente ──────────
+  for (const e of receiveQueue) {
     try {
       const parts    = (e.meta.relativePath || e.meta.name).split('/');
       const fileName = parts.pop();
-
       let dir = targetDirHandle;
       for (const part of parts) {
-        dir = await dir.getDirectoryHandle(part, { create: true });
+        if (part) dir = await dir.getDirectoryHandle(part, { create: true });
       }
-
-      const fileHandle = await dir.getFileHandle(fileName, { create: true });
-      e.writable   = await fileHandle.createWritable();
+      
+      e.fileHandle = await dir.getFileHandle(fileName, { create: true });
       e.isStreaming = true;
-      log(`💾 Salvando "${e.meta.name}" em disco`, 'info');
+      
     } catch (err) {
       e.isStreaming = false;
-      log(`⚠️ "${e.meta.name}" ficará em memória`, 'warn');
+      log(`⚠️ "${e.meta.name}" em memória (${err.message})`, 'warn');
     }
-
-    await drainAndFinalize(e);
   }
 
+  // ── Fase 2: Oculta painel e libera o dreno inicial ────────────────────────
   $('acceptContainer').style.display = 'none';
-  isAccepting = false;
   acceptBtn.disabled  = false;
   acceptBtn.innerText = 'Aceitar';
+
+  for (const e of receiveQueue) {
+    await drainAndFinalize(e);
+  }
 }
 
 async function drainAndFinalize(e) {
   setItemStatus(e.listItem, 'active');
-  const queued = pendingChunksMap[e.id] ?? [];
-  delete pendingChunksMap[e.id];
-  for (const chunk of queued) await writeChunk(e, chunk);
-  if (e.receivedSize > 0) updateProgress(e);
-  if (e.receivedSize >= e.meta.size) await finalizeReceive(e);
+
+  const queued = pendingChunksMap.get(e.id) ?? [];
+  
+  // Enfileira o dreno inicial na Promise ANTES de liberar novos dados
+  e.writeLock = e.writeLock.then(async () => {
+    for (const chunk of queued) {
+      await writeChunk(e, chunk);
+    }
+    
+    if (e.receivedSize > 0) updateProgress(e);
+
+    if (!e.finalized && e.receivedSize >= e.meta.size) {
+      e.finalized = true;
+      await finalizeReceive(e);
+    }
+  });
+
+  // Somente agora sinalizamos que os novos chunks podem ir direto pro Lock
+  pendingChunksMap.set(e.id, null); 
 }
 
-// ─── Escrita / finalização ────────────────────────────────────────────────────
+// ─── Escrita em disco ou memória ─────────────────────────────────────────────
 async function writeChunk(entry, data) {
-  if (entry.isStreaming && entry.writable) {
-    try { await entry.writable.write(data); }
-    catch (err) { log('❌ Erro ao salvar chunk em disco', 'error'); }
+  if (entry.isStreaming) {
+    try {
+      // Lazy load: abre o fluxo de escrita apenas na chegada do primeiro chunk
+      if (!entry.writable && entry.fileHandle) {
+        entry.writable = await entry.fileHandle.createWritable();
+      }
+      await entry.writable.write(data);
+    } catch (err) {
+      log(`❌ Erro ao salvar chunk de "${entry.meta.name}"`, 'error');
+    }
   } else {
     entry.buffers.push(data);
   }
   entry.receivedSize += data.byteLength;
+}
+
+// ─── Finalização de recepção ─────────────────────────────────────────────────
+async function finalizeReceive(entry) {
+  if (entry.isStreaming && entry.writable) {
+    try {
+      await entry.writable.close();
+    } catch (err) {
+      log(`❌ Erro ao fechar "${entry.meta.name}": ${err.message}`, 'error');
+    }
+    log(`${entry.meta.name} salvo em disco`, 'success');
+  } else {
+    const blob = new Blob(entry.buffers, { type: entry.meta.type || 'application/octet-stream' });
+    const url  = URL.createObjectURL(blob);
+    const a    = Object.assign(document.createElement('a'), {
+      href: url,
+      download: entry.meta.relativePath || entry.meta.name
+    });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    entry.buffers = [];
+    log(`${entry.meta.name} baixado`, 'receive');
+  }
+
+  setItemStatus(entry.listItem, 'done');
+  setItemSize(entry.listItem, `(completo) ${fmtMB(entry.meta.size)}`);
+  setItemProgress(entry.listItem, 100);
+
+  // Confirma recebimento ao remetente
+  dataChannel.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
+
+  receiveMap.delete(entry.meta.id);
+
+  receivedFilesCount++;
+  if (expectedFilesCount > 0 && receivedFilesCount >= expectedFilesCount) {
+    log(`🎉 Todos os ${expectedFilesCount} arquivos recebidos!`, 'success');
+    targetDirHandle    = null;
+    expectedFilesCount = 0;
+    receivedFilesCount = 0;
+    receiveQueue       = [];
+  }
 }
 
 // ─── Envio ────────────────────────────────────────────────────────────────────
@@ -461,18 +491,19 @@ function offerFiles() {
     return;
   }
 
-  // Junta arquivos avulsos + arquivos da pasta
-  const fileList   = Array.from($('fileInput').files);
-  const folderList = Array.from($('folderInput').files);
-  const files      = [...fileList, ...folderList];
-  
+  const files = [
+    ...Array.from($('fileInput').files),
+    ...Array.from($('folderInput').files)
+  ];
   if (files.length === 0) return;
 
   $('emptySendQueue').style.display = 'none';
-  
+  $('sendContainer').style.display  = 'flex';
+  $('sendFileSize').textContent     = fmtMB(files.reduce((a, b) => a + b.size, 0));
+
   for (const file of files) {
-    if (file.size > MAX_FILE_SIZE && peerReceiveMode === 'memory') {
-      log(`❌ ${file.name} muito grande (máx 1.5 GB) — pulado`, 'error');
+    if (file.size > MAX_FILE_SIZE) {
+      log(`❌ ${file.name} muito grande — pulado`, 'error');
       continue;
     }
     const li = createQueueItem($('sendQueue'), file.name, file.size);
@@ -489,61 +520,72 @@ async function sendFiles() {
   sendQueue = [];
   if (toSend.length === 0) { log('⚠️ Nenhum arquivo na fila', 'warn'); return; }
 
-  // Inicializa (ou reinicia) o sinal de abortar para este lote de envio
+  $('sendContainer').style.display = 'none';
+  $('btn-send').disabled = true;
+
   sendAbortController = new AbortController();
 
-  // Anuncia quantos arquivos virão
-  dataChannel.send(JSON.stringify({ type: 'offer-files', data: { total: toSend.length, size: toSend.reduce((a, b) => a + b.file.size, 0) } }));
+  // 1. Envia a oferta de lote
+  dataChannel.send(JSON.stringify({
+    type: 'offer-files',
+    data: { total: toSend.length, size: toSend.reduce((a, b) => a + b.file.size, 0) }
+  }));
 
-  /**
-   * Modo de Recepção: 
-   *  - 'memory' : envia um por um, aguardando Promise
-   *  - 'disk'   : envia em paralelo, sem aguardar Promise
-   * Passamos o sinal de abortar para a função de envio
-   */
-  if (peerReceiveMode === 'memory') {
-    for (const file of toSend) {
-      // 1. envia o arquivo e aguarda todos os chunks saírem
-      await sendSingleFile(file, sendAbortController.signal);
-
-      // 2. aguarda confirmação do receptor antes de enviar o próximo
-      await new Promise((resolve) => {
-        receivedAckResolvers[file.id] = resolve;
-
-        dataChannel.addEventListener('close', () => {
-          if (receivedAckResolvers[file.id]) {
-            delete receivedAckResolvers[file.id];
-            resolve();
-          }
-        }, { once: true });
-      });
-    }
-  } else {
-    for (const file of toSend) {
-      sendSingleFile(file, sendAbortController.signal);
-    }
+  // 2. ADICIONE ESTE BLOCO: Envia a 'lista' de todos os arquivos de uma vez
+  for (const item of toSend) {
+    dataChannel.send(JSON.stringify({
+      type: 'meta',
+      data: {
+        name: item.file.name,
+        size: item.file.size,
+        type: item.file.type,
+        id: item.id,
+        relativePath: item.relativePath
+      }
+    }));
   }
 
-  // Limpa input de arquivos
-  $('fileInput').value = '';
+  // 3. Fluxo Sequencial: Processa um arquivo por vez de forma limpa
+  for (const file of toSend) {
+    // Interrompe se o usuário cancelar o envio
+    if (sendAbortController.signal.aborted) break;
+
+    // Envia o arquivo e seus chunks
+    await sendSingleFile(file, sendAbortController.signal);
+
+    if (sendAbortController.signal.aborted) break;
+
+    // Trava o loop até o receptor confirmar o salvamento (ACK)
+    await new Promise((resolve) => {
+      receivedAckResolvers.set(file.id, resolve);
+
+      // Desbloqueia caso a conexão caia no meio da espera
+      const onClose = () => {
+        receivedAckResolvers.delete(file.id);
+        resolve();
+      };
+      dataChannel.addEventListener('close', onClose, { once: true });
+    });
+  }
+
+  // Limpa os inputs após finalizar a fila
+  $('fileInput').value  = '';
   $('folderInput').value = '';
 }
 
 function sendSingleFile({ file, listItem, id, relativePath }, signal) {
-  return new Promise((resolve) => {          // ← adiciona o wrapper
+  return new Promise((resolve) => {
     setItemStatus(listItem, 'active');
     log(`Enviando: ${file.name} (${fmtMB(file.size)})`, 'send');
-
-    dataChannel.send(JSON.stringify({ type: 'meta', data: { name: file.name, size: file.size, type: file.type, id, relativePath: relativePath } }));
 
     let offset = 0;
     const reader = new FileReader();
 
-    const sendNextChunk = () => {
-      if (signal && signal.aborted) {
+    const sendNextChunk = async () => {
+      if (signal.aborted) {
         setItemStatus(listItem, 'error');
-        setItemSize(listItem, '(cancelado pelo destinatário)');
-        resolve();                           // ← resolve mesmo no abort
+        setItemSize(listItem, '(cancelado)');
+        resolve();
         return;
       }
 
@@ -552,29 +594,31 @@ function sendSingleFile({ file, listItem, id, relativePath }, signal) {
         setItemSize(listItem, `(completo) ${fmtMB(file.size)}`);
         setItemProgress(listItem, 100);
         log(`${file.name} enviado`, 'send');
-        resolve();                           // ← resolve ao terminar
+        resolve();
         return;
       }
 
-      if (dataChannel.bufferedAmount > 1024 * 1024) {
-        setTimeout(sendNextChunk, 50);
-        return;
+      // Backpressure: espera o buffer do canal esvaziar
+      if (dataChannel.bufferedAmount > BUFFER_HIGH_WATER) {
+        await waitForBufferDrain();
       }
+
       reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
     };
 
     reader.onload = async (e) => {
-      if (signal && signal.aborted) { resolve(); return; }
+      if (signal.aborted) { resolve(); return; }
 
+      const raw = e.target.result;
+
+      // Monta pacote: [4 bytes idLen LE][id UTF-8][dados]
       const idBytes = new TextEncoder().encode(id);
-      const headerBuffer = new ArrayBuffer(4);
-      const headerView = new DataView(headerBuffer);
-      headerView.setUint32(0, idBytes.length, true);
-
-      const buf = await new Blob([headerBuffer, idBytes, e.target.result]).arrayBuffer();
+      const header  = new ArrayBuffer(4);
+      new DataView(header).setUint32(0, idBytes.length, true);
+      const buf = await new Blob([header, idBytes, raw]).arrayBuffer();
       dataChannel.send(buf);
 
-      offset += e.target.result.byteLength;
+      offset += raw.byteLength;
       const pct = ((offset / file.size) * 100).toFixed(1);
       setItemSize(listItem, `${pct}% · ${fmtMB(offset)} de ${fmtMB(file.size)}`);
       setItemProgress(listItem, pct);
@@ -584,56 +628,26 @@ function sendSingleFile({ file, listItem, id, relativePath }, signal) {
     reader.onerror = () => {
       setItemStatus(listItem, 'error');
       log(`❌ Erro ao ler ${file.name}`, 'error');
-      resolve();                             // ← resolve no erro também
+      resolve();
     };
 
     sendNextChunk();
-  });  
+  });
 }
 
-// ─── Finalização de Recepção ───────────────────────────────────────────────────────
-async function finalizeReceive(entry) {
-  if (entry.isStreaming && entry.writable) {
-    await entry.writable.close();
-    log(`${entry.meta.name} salvo em disco`, 'success');
-  } else {
-    // Download automático assim que terminar
-    const blob = new Blob(entry.buffers);
-    const url  = URL.createObjectURL(blob);
-    const a    = Object.assign(document.createElement('a'), {
-      href: url,
-      download:   entry.meta.relativePath || entry.meta.name
-    });
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
-    entry.buffers = []; // libera memória imediatamente
-
-    log(`${entry.meta.name} baixado automaticamente`, 'receive');
-  }
-
-  setItemStatus(entry.listItem, 'done');
-  setItemSize(entry.listItem, `(completo) ${fmtMB(entry.meta.size)}`);
-  setItemProgress(entry.listItem, 100);
-  dataChannel.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
-
-  receivedFilesCount++;
-  
-  if (expectedFilesCount > 0 && receivedFilesCount === expectedFilesCount) {
-    log(`Todos os ${expectedFilesCount} arquivos foram recebidos com sucesso! 🎉`, 'success');
-    targetDirHandle = null; // ← libera para o próximo lote escolher nova pasta
-    // Reseta os contadores para segurança
-    expectedFilesCount = 0;
-    receivedFilesCount = 0;
-  }
+// Aguarda o bufferedAmount cair abaixo do limiar — usando bufferedamountlow
+function waitForBufferDrain() {
+  return new Promise((resolve) => {
+    if (dataChannel.bufferedAmount <= BUFFER_LOW_WATER) { resolve(); return; }
+    dataChannel.bufferedAmountLowThreshold = BUFFER_LOW_WATER;
+    dataChannel.addEventListener('bufferedamountlow', resolve, { once: true });
+  });
 }
 
-// ─── Antes de sair verificar se upload / download estão em andamento ───────────────────────────────────────────────────────
+// ─── Beforeunload ─────────────────────────────────────────────────────────────
 window.addEventListener('beforeunload', (e) => {
-  const enviando   = sendQueue.length > 0;
-  const recebendo  = receiveQueue.some(entry => entry.receivedSize < entry.meta?.size);
-
+  const enviando  = sendQueue.length > 0;
+  const recebendo = receiveQueue.some(en => en.receivedSize < en.meta?.size);
   if (enviando || recebendo) {
     e.preventDefault();
     e.returnValue = '';
@@ -643,7 +657,7 @@ window.addEventListener('beforeunload', (e) => {
 // ─── Bindings ─────────────────────────────────────────────────────────────────
 $('btn-connect') .addEventListener('click', connect);
 $('fileInput')   .addEventListener('change', offerFiles);
-$('folderInput').addEventListener('change', offerFiles);
+$('folderInput') .addEventListener('change', offerFiles);
 $('btn-send')    .addEventListener('click', sendFiles);
 $('btn-accept')  .addEventListener('click', acceptEntry);
 

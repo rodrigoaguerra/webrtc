@@ -46,13 +46,12 @@
     <div class="controls">
       <div>
         <label>Arquivos</label>
-        <input id="fileInput" type="file" multiple disabled />
+        <input id="fileInput" type="file" multiple />
       </div>
       <div>
         <label>Pasta</label>
-        <input id="folderInput" type="file" webkitdirectory multiple disabled />
+        <input id="folderInput" type="file" webkitdirectory multiple />
       </div>
-      <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
     </div>
     <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
   </section>
@@ -66,6 +65,11 @@
         <h3>📦 Fila de Envio</h3>
         <p id="emptySendQueue">Nenhum arquivo na fila</p>
         <ul id="sendQueue" class="file-queue"></ul>
+        <div id="sendContainer" style="display: none;">
+          <p>📦 Confirmar envio de arquivos:</p>
+          <p><strong>Tamanho Total:</strong> <span id="sendFileSize"></span></p>
+          <button id="btn-send">Enviar arquivos</button>
+        </div>
       </div>
 
       <!-- Fila de recebimento -->
@@ -73,16 +77,15 @@
         <h3>📥 Fila de Recebimento</h3>
         <p id="emptyReceiveQueue">Nenhum arquivo na fila</p>
         <ul id="receiveQueue" class="file-queue"></ul>
+        <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
+        <div id="acceptContainer" style="display: none;">
+          <p>📥 Confirmar o recebimento de arquivos:</p>
+          <p><strong>Tamanho Total:</strong> <span id="transferFileSize"></span></p>
+          <button id="btn-accept">Aceitar e Salvar</button>
+        </div>
       </div>
     </div>
 
-    <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
-    <div id="acceptContainer" style="display: none; border: 2px solid #4CAF50; padding: 15px; border-radius: 8px; margin: 10px 0;">
-      <p>📥 Recebimento aguardando:</p>
-      <p><strong>Arquivo:</strong> <span id="transferFileName"></span></p>
-      <p><strong>Tamanho:</strong> <span id="transferFileSize"></span></p>
-      <button id="btn-accept" style="background-color: #4CAF50; color: white; padding: 10px 20px; border: none; border-radius: 4px; cursor: pointer;">Aceitar e Salvar</button>
-    </div>
 
   </section>
 
