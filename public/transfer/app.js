@@ -42,6 +42,30 @@ const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
 const $ = id => document.getElementById(id);
 const now = () => new Date().toLocaleTimeString('pt-BR', { hour12: false });
 
+// ─── Impedir suspensão do navegador ────────────────────────────────────────────────────────────────
+let wakeLock = null;
+
+async function requestWakeLock() {
+  try {
+    // Solicita o bloqueio de suspensão ao sistema
+    wakeLock = await navigator.wakeLock.request('screen');
+    wakeLock.addEventListener('release', () => {
+      console.log('Wake Lock liberado');
+    });
+    log('💡 Modo de suspensão bloqueado para manter transferência ativa', 'info');
+  } catch (err) {
+    console.error(`Falha no Wake Lock: ${err.name}, ${err.message}`);
+  }
+}
+
+function releaseWakeLock() {
+  if (wakeLock !== null) {
+    wakeLock.release().then(() => {
+      wakeLock = null;
+    });
+  }
+}
+
 function log(msg, type = '') {
   const line = document.createElement('div');
   line.className = 'log-line';
@@ -272,6 +296,7 @@ function handleControlMessage(msg) {
         $('sendQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'error'));
         log('Envios interrompidos.', 'error');
       }
+      releaseWakeLock(); // <--- LIBERAR O BLOQUEIO DE TELA
       break;
 
     case 'meta': {
@@ -309,6 +334,12 @@ function handleControlMessage(msg) {
         resolve();
         receivedAckResolvers.delete(msg.data.id);
       }
+      break;
+    }
+
+    case 'finished' : {
+      log(`Transferência concluida: ${fmtMB(expectedTotalSize)} foram enviados...`, 'success');
+      releaseWakeLock(); // <--- LIBERAR O BLOQUEIO DE TELA
       break;
     }
   }
@@ -351,10 +382,13 @@ function showAcceptTransfer() {
 }
 
 async function acceptEntry() {
+  await requestWakeLock(); // <--- ATIVAR O BLOQUEIO DE TELA
+  
   const acceptBtn = $('btn-accept');
   acceptBtn.disabled  = true;
   acceptBtn.innerText = 'Processando...';
-
+  
+  
   // Pede pasta destino
   try {
     if (!targetDirHandle) {
@@ -477,6 +511,7 @@ async function finalizeReceive(entry) {
   receivedFilesCount++;
   if (expectedFilesCount > 0 && receivedFilesCount >= expectedFilesCount) {
     log(`🎉 Todos os ${expectedFilesCount} arquivos recebidos!`, 'success');
+    dataChannel.send(JSON.stringify({ type: 'finished' }));
     targetDirHandle    = null;
     expectedFilesCount = 0;
     receivedFilesCount = 0;
@@ -546,6 +581,9 @@ async function sendFiles() {
   }
 
   // 3. Fluxo Sequencial: Processa um arquivo por vez de forma limpa
+  
+  await requestWakeLock(); // <--- ATIVAR O BLOQUEIO DE SUSPENÇÃO
+
   for (const file of toSend) {
     // Interrompe se o usuário cancelar o envio
     if (sendAbortController.signal.aborted) break;
@@ -567,6 +605,9 @@ async function sendFiles() {
       dataChannel.addEventListener('close', onClose, { once: true });
     });
   }
+
+  // Desativa o bloqueio de suspensão
+  await releaseWakeLock();
 
   // Limpa os inputs após finalizar a fila
   $('fileInput').value  = '';
