@@ -18,6 +18,8 @@ const pendingChunksMap = new Map(); // id → ArrayBuffer[] | null
 let expectedFilesCount = 0;
 let expectedTotalSize  = 0;
 let receivedFilesCount = 0;
+let sendFilesCount     = 0;
+let sendFilesTotal    = 0;
 
 // Modos de operação
 let peerMode        = 'memory'; // modo local de recepção
@@ -293,6 +295,7 @@ function handleControlMessage(msg) {
       expectedFilesCount = msg.data.total;
       expectedTotalSize  = msg.data.size;
       receivedFilesCount = 0;
+      $('received-files-count').innerText = receivedFilesCount + ' de ' + expectedFilesCount;
       log(`Lote de ${expectedFilesCount} arquivo(s) · ${fmtMB(expectedTotalSize)}`, 'send');
       
       if(peerMode === 'disk') {
@@ -341,6 +344,8 @@ function handleControlMessage(msg) {
 
     case 'received': {
       log(`✅ Recebido confirmado: ${msg.data.name}`, 'success');
+      sendFilesCount++;
+      $('send-files-count').innerText = `${sendFilesCount} de ${sendFilesTotal}`;
       const resolve = receivedAckResolvers.get(msg.data.id);
       if (resolve) {
         resolve();
@@ -350,7 +355,8 @@ function handleControlMessage(msg) {
     }
 
     case 'finished' : {
-      log(`Transferência concluida: ${fmtMB(expectedTotalSize)} foram enviados...`, 'success');
+      log(`Transferência concluida: ${fmtMB(msg.data.size)} foram enviados...`, 'success');
+      $('send-files-count').innerText = `${sendFilesCount} de ${sendFilesTotal}`;
       releaseWakeLock(); // <--- LIBERAR O BLOQUEIO DE TELA
       break;
     }
@@ -521,9 +527,12 @@ async function finalizeReceive(entry) {
   receiveMap.delete(entry.meta.id);
 
   receivedFilesCount++;
+  
+  $('received-files-count').innerText = `${receivedFilesCount} de ${expectedFilesCount}`;
+
   if (expectedFilesCount > 0 && receivedFilesCount >= expectedFilesCount) {
     log(`🎉 Todos os ${expectedFilesCount} arquivos recebidos!`, 'success');
-    dataChannel.send(JSON.stringify({ type: 'finished' }));
+    dataChannel.send(JSON.stringify({ type: 'finished', data: { size: expectedFilesCount } }));
     targetDirHandle    = null;
     expectedFilesCount = 0;
     receivedFilesCount = 0;
@@ -577,6 +586,10 @@ async function sendFiles() {
     type: 'offer-files',
     data: { total: toSend.length, size: toSend.reduce((a, b) => a + b.file.size, 0) }
   }));
+
+
+  sendFilesTotal = toSend.length; 
+  $('send-files-count').textContent = sendFilesTotal;
 
   // 2. ADICIONE ESTE BLOCO: Envia a 'lista' de todos os arquivos de uma vez
   for (const item of toSend) {

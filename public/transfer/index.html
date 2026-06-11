@@ -46,11 +46,11 @@
     <div class="controls">
       <div>
         <label>Arquivos</label>
-        <input id="fileInput" type="file" multiple />
+        <input id="fileInput" type="file" multiple disabled />
       </div>
       <div>
         <label>Pasta</label>
-        <input id="folderInput" type="file" webkitdirectory multiple />
+        <input id="folderInput" type="file" webkitdirectory multiple  disabled/>
       </div>
     </div>
     <p class="hint">Segure Ctrl/Cmd para selecionar vários arquivos</p>
@@ -62,7 +62,7 @@
     <div id="transferContainer">
       <!-- Fila de envio -->
       <div id="sendQueueContainer">
-        <h3>📦 Fila de Envio</h3>
+        <h3>📦 Fila de Envio / <small id="send-files-count"></small></h3>
         <p id="emptySendQueue">Nenhum arquivo na fila</p>
         <ul id="sendQueue" class="file-queue"></ul>
         <div id="sendContainer" style="display: none;">
@@ -74,7 +74,7 @@
 
       <!-- Fila de recebimento -->
       <div id="receiveQueueContainer">
-        <h3>📥 Fila de Recebimento</h3>
+        <h3>📥 Fila de Recebimento / <small id="received-files-count"></small></h3>
         <p id="emptyReceiveQueue">Nenhum arquivo na fila</p>
         <ul id="receiveQueue" class="file-queue"></ul>
         <!-- Painel de aceite (mesmo do original, reutilizado por arquivo) -->
