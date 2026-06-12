@@ -22,8 +22,7 @@ let sendFilesCount     = 0;
 let sendFilesTotal    = 0;
 
 // Modos de operação
-let peerMode        = 'memory'; // modo local de recepção
-let peerReceiveMode = 'memory'; // modo do peer remoto (para decisão de envio)
+let peerMode = 'memory'; // modo local de recepção
 
 // ACK por arquivo: resolve quando receptor confirmar cada arquivo
 const receivedAckResolvers = new Map(); // id → resolve
@@ -34,11 +33,20 @@ let sendAbortController = null;
 // Handle da pasta destino (File System Access API)
 let targetDirHandle = null;
 
+// Contadores de escrita
+let activeWrites = 0;
+let isPaused = false;
+
+let sendPaused = false;
+const sendResumeResolvers = new Set();
+
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const CHUNK_SIZE        = 250 * 1024;                // 250 KB
+const CHUNK_SIZE =  250 * 1024;                      // 250 KB — 6 KB para o header
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
 const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
+const MAX_ACTIVE_WRITES = 8; // 8 escritas em paralelo
+
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -51,9 +59,6 @@ async function requestWakeLock() {
   try {
     // Solicita o bloqueio de suspensão ao sistema
     wakeLock = await navigator.wakeLock.request('screen');
-    wakeLock.addEventListener('release', () => {
-      console.log('Wake Lock liberado');
-    });
     log('💡 Modo de suspensão bloqueado para manter transferência ativa', 'info');
   } catch (err) {
     console.error(`Falha no Wake Lock: ${err.name}, ${err.message}`);
@@ -76,7 +81,7 @@ function log(msg, type = '') {
     <span class="log-time">${now()}</span>
     <span class="log-icon">${icons[type] || '·'}</span>
     <span class="log-msg ${type}">${msg}</span>`;
-  $('log').prepend(line);
+  $('log').appendChild(line);
 }
 
 function fmtMB(bytes) { return (bytes / 1024 / 1024).toFixed(2) + ' MB'; }
@@ -253,7 +258,6 @@ async function createOffer(room) {
 // ─── DataChannel ─────────────────────────────────────────────────────────────
 function setupDataChannel() {
   dataChannel.onopen = () => {
-    log('Canal aberto 🚀', 'success');
     $('fileInput').disabled  = false;
     $('folderInput').disabled = false;
 
@@ -270,6 +274,16 @@ function setupDataChannel() {
     $('folderInput').disabled = true;
     $('sendContainer').style.display = 'none';
     $('btn-send').disabled = true;
+
+    // ✅ desbloqueia workers que ficaram presos
+    sendPaused = false;
+    for (const r of sendResumeResolvers) r();
+    sendResumeResolvers.clear();
+
+    for (const [id, resolve] of receivedAckResolvers) {
+      resolve();
+      receivedAckResolvers.delete(id);
+    }
   };
 
   // Separação crítica: controle (síncrono) vs dados (async)
@@ -285,11 +299,6 @@ function setupDataChannel() {
 // ─── Mensagens de controle (síncrono) ────────────────────────────────────────
 function handleControlMessage(msg) {
   switch (msg.type) {
-
-    case 'receive-mode':
-      peerReceiveMode = msg.mode;
-      log(`Peer recebe em modo: ${peerReceiveMode}`, 'info');
-      break;
 
     case 'offer-files':
       expectedFilesCount = msg.data.total;
@@ -311,7 +320,7 @@ function handleControlMessage(msg) {
         $('sendQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'error'));
         log('Envios interrompidos.', 'error');
       }
-      releaseWakeLock(); // <--- LIBERAR O BLOQUEIO DE TELA
+      releaseWakeLock();
       break;
 
     case 'meta': {
@@ -342,8 +351,22 @@ function handleControlMessage(msg) {
       break;
     }
 
+    case 'pause': {
+      sendPaused = true;
+      log('Receptor pediu pausa ⏸', 'warn');
+      return;
+    }
+
+    case 'resume': {
+      sendPaused = false;
+      log('Receptor retomou ▶️', 'info');
+      for (const r of sendResumeResolvers) r();
+      sendResumeResolvers.clear();
+      return;
+    }
+
     case 'received': {
-      log(`✅ Recebido confirmado: ${msg.data.name}`, 'success');
+      log(`Recebido confirmado: ${msg.data.name}`, 'success');
       sendFilesCount++;
       $('send-files-count').innerText = `${sendFilesCount} de ${sendFilesTotal}`;
       const resolve = receivedAckResolvers.get(msg.data.id);
@@ -357,7 +380,7 @@ function handleControlMessage(msg) {
     case 'finished' : {
       log(`Transferência concluida: ${fmtMB(msg.data.size)} foram enviados...`, 'success');
       $('send-files-count').innerText = `${sendFilesCount} de ${sendFilesTotal}`;
-      releaseWakeLock(); // <--- LIBERAR O BLOQUEIO DE TELA
+      releaseWakeLock();
       break;
     }
   }
@@ -400,7 +423,7 @@ function showAcceptTransfer() {
 }
 
 async function acceptEntry() {
-  await requestWakeLock(); // <--- ATIVAR O BLOQUEIO DE TELA
+  await requestWakeLock();
   
   const acceptBtn = $('btn-accept');
   acceptBtn.disabled  = true;
@@ -479,6 +502,14 @@ async function drainAndFinalize(e) {
 async function writeChunk(entry, data) {
   if (entry.isStreaming) {
     try {
+      activeWrites++;
+  
+      // Sinaliza pausa se acumulou muitos writes pendentes
+      if (activeWrites >= MAX_ACTIVE_WRITES && !isPaused) {
+        isPaused = true;
+        dataChannel.send(JSON.stringify({ type: 'pause' }));
+      }
+
       // Lazy load: abre o fluxo de escrita apenas na chegada do primeiro chunk
       if (!entry.writable && entry.fileHandle) {
         entry.writable = await entry.fileHandle.createWritable();
@@ -490,6 +521,15 @@ async function writeChunk(entry, data) {
   } else {
     entry.buffers.push(data);
   }
+
+  activeWrites--;
+
+  // Resume quando esvaziar
+  if (activeWrites === 0 && isPaused) {
+    isPaused = false;
+    dataChannel.send(JSON.stringify({ type: 'resume' }));
+  }
+
   entry.receivedSize += data.byteLength;
 }
 
@@ -531,8 +571,8 @@ async function finalizeReceive(entry) {
   $('received-files-count').innerText = `${receivedFilesCount} de ${expectedFilesCount}`;
 
   if (expectedFilesCount > 0 && receivedFilesCount >= expectedFilesCount) {
-    log(`🎉 Todos os ${expectedFilesCount} arquivos recebidos!`, 'success');
-    dataChannel.send(JSON.stringify({ type: 'finished', data: { size: expectedFilesCount } }));
+    log(`Todos os ${expectedFilesCount} arquivos com tamanho ${fmtMB(expectedTotalSize)} foram recebidos! 🎉 `, 'success');
+    dataChannel.send(JSON.stringify({ type: 'finished', data: { size: expectedTotalSize } }));
     targetDirHandle    = null;
     expectedFilesCount = 0;
     receivedFilesCount = 0;
@@ -543,7 +583,7 @@ async function finalizeReceive(entry) {
 // ─── Envio ────────────────────────────────────────────────────────────────────
 function offerFiles() {
   if (!dataChannel || dataChannel.readyState !== 'open') {
-    log('⚠️ Canal ainda não está aberto', 'warn');
+    log('Canal ainda não está aberto', 'warn');
     return;
   }
 
@@ -587,7 +627,6 @@ async function sendFiles() {
     data: { total: toSend.length, size: toSend.reduce((a, b) => a + b.file.size, 0) }
   }));
 
-
   sendFilesTotal = toSend.length; 
   $('send-files-count').textContent = sendFilesTotal;
 
@@ -605,32 +644,21 @@ async function sendFiles() {
     }));
   }
 
-  // 3. Fluxo Sequencial: Processa um arquivo por vez de forma limpa
+  // 3. Fluxo Por Concorrência: Processa 'n' arquivos por vez
   
-  await requestWakeLock(); // <--- ATIVAR O BLOQUEIO DE SUSPENÇÃO
+  await requestWakeLock();
 
-  for (const file of toSend) {
-    // Interrompe se o usuário cancelar o envio
-    if (sendAbortController.signal.aborted) break;
+  const totalSize = toSend.reduce((a, b) => a + b.file.size, 0);
+  const avgSize   = totalSize / toSend.length;
 
-    // Envia o arquivo e seus chunks
-    await sendSingleFile(file, sendAbortController.signal);
+  // Adapta concorrência ao perfil dos arquivos
+  const concurrency = avgSize < 100  * 1024 ? 6   // < 100 KB: muitos pequenos
+                    : avgSize < 5    * 1024 * 1024 ? 3   // < 5 MB: médios (fotos)
+                    : 1;                               // > 5 MB: grandes
 
-    if (sendAbortController.signal.aborted) break;
-
-    // Trava o loop até o receptor confirmar o salvamento (ACK)
-    await new Promise((resolve) => {
-      receivedAckResolvers.set(file.id, resolve);
-
-      // Desbloqueia caso a conexão caia no meio da espera
-      const onClose = () => {
-        receivedAckResolvers.delete(file.id);
-        resolve();
-      };
-      dataChannel.addEventListener('close', onClose, { once: true });
-    });
-  }
-
+  log(`Enviando ${toSend.length} arquivo(s) · concorrência: ${concurrency}`, 'info');
+  await sendWithConcurrency(toSend, sendAbortController.signal, concurrency);
+  
   // Desativa o bloqueio de suspensão
   await releaseWakeLock();
 
@@ -639,7 +667,7 @@ async function sendFiles() {
   $('folderInput').value = '';
 }
 
-function sendSingleFile({ file, listItem, id, relativePath }, signal) {
+function sendSingleFile({ file, listItem, id }, signal) {
   return new Promise((resolve) => {
     setItemStatus(listItem, 'active');
     log(`Enviando: ${file.name} (${fmtMB(file.size)})`, 'send');
@@ -667,6 +695,10 @@ function sendSingleFile({ file, listItem, id, relativePath }, signal) {
       // Backpressure: espera o buffer do canal esvaziar
       if (dataChannel.bufferedAmount > BUFFER_HIGH_WATER) {
         await waitForBufferDrain();
+      }
+
+      if (sendPaused) {
+        await new Promise(resolve => sendResumeResolvers.add(resolve));
       }
 
       reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
@@ -710,7 +742,32 @@ function waitForBufferDrain() {
   });
 }
 
-// ─── Beforeunload ─────────────────────────────────────────────────────────────
+async function sendWithConcurrency(files, signal, concurrency = 4) {
+  const queue = [...files];
+  
+  async function worker() {
+    while (queue.length > 0) {
+      if (signal.aborted) return;
+      const file = queue.shift();
+      await sendSingleFile(file, signal);
+      if (signal.aborted) return;
+
+      await new Promise((resolve) => {
+        receivedAckResolvers.set(file.id, resolve);        // ← Map
+        dataChannel.addEventListener('close', () => {
+          receivedAckResolvers.delete(file.id);             // ← Map
+          resolve();
+        }, { once: true });
+      });
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: concurrency }, worker)
+  );
+}
+
+// ─── Eventos de Desligamento ─────────────────────────────────────────────────────────────
 window.addEventListener('beforeunload', (e) => {
   const enviando  = sendQueue.length > 0;
   const recebendo = receiveQueue.some(en => en.receivedSize < en.meta?.size);
