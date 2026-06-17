@@ -40,7 +40,7 @@ let targetDirHandle = null;
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const CHUNK_SIZE        = 250 * 1024;                // 250 KB — 6 KB para o header
+let   CHUNK_SIZE        = 250 * 1024;                // valor inicial — recalculado no onopen com base no limite real do canal
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
 const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
 
@@ -256,8 +256,15 @@ async function createOffer(room) {
 // ─── DataChannel ─────────────────────────────────────────────────────────────
 function setupDataChannel() {
   dataChannel.onopen = () => {
+    log('Canal WebRTC aberto', 'success');
     $('fileInput').disabled  = false;
     $('folderInput').disabled = false;
+
+    // Descobre o limite real negociado pela conexão (varia por browser/versão)
+    const HEADER_OVERHEAD = 6 * 1024; // margem para [4 bytes idLen][id UTF-8]
+    const negotiatedMax = pc.sctp?.maxMessageSize || (64 * 1024); // fallback se sctp indisponível
+    CHUNK_SIZE = Math.max(16 * 1024, Math.min(negotiatedMax - HEADER_OVERHEAD, 1024 * 1024));
+    log(`Tamanho de chunk ajustado: ${fmtMB(CHUNK_SIZE)} (limite do canal: ${fmtMB(negotiatedMax)})`, 'info');
 
     // Anuncia modo de recepção local ao peer
     const mode = detectReceiveMode();
@@ -266,8 +273,7 @@ function setupDataChannel() {
   };
 
   dataChannel.onclose = () => {
-    log('Canal fechado', 'error');
-    setDot('peer', 'red');
+    log('Canal WebRTC fechado', 'error');
     $('fileInput').disabled  = true;
     $('folderInput').disabled = true;
     $('sendContainer').style.display = 'none';
@@ -408,7 +414,6 @@ function showAcceptTransfer() {
   $('receiveQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'pending'));
   log(`Aguardando aceite — ${fmtMB(expectedTotalSize)} 🔔 `, 'warn');
 }
-
 
 async function acceptEntry() {
   await requestWakeLock();
@@ -698,12 +703,13 @@ function sendSingleFile({ file, listItem, id }, signal) {
 
       const raw = e.target.result;
 
-      // Monta pacote: [4 bytes idLen LE][id UTF-8][dados]
+      // Monta pacote: [4 bytes idLen LE][id UTF-8][dados] — sem Blob, direto em Uint8Array
       const idBytes = new TextEncoder().encode(id);
-      const header  = new ArrayBuffer(4);
-      new DataView(header).setUint32(0, idBytes.length, true);
-      const buf = await new Blob([header, idBytes, raw]).arrayBuffer();
-      dataChannel.send(buf);
+      const buf = new Uint8Array(4 + idBytes.length + raw.byteLength);
+      new DataView(buf.buffer).setUint32(0, idBytes.length, true);
+      buf.set(idBytes, 4);
+      buf.set(new Uint8Array(raw), 4 + idBytes.length);
+      dataChannel.send(buf.buffer);
 
       offset += raw.byteLength;
       const pct = ((offset / file.size) * 100).toFixed(1);
@@ -733,7 +739,7 @@ function waitForBufferDrain() {
 
 // ─── Eventos de Desligamento ─────────────────────────────────────────────────────────────
 window.addEventListener('beforeunload', (e) => {
-  const enviando  = sendQueue.length > 0;
+  const enviando  = sendFilesCount < sendFilesTotal;
   const recebendo = receiveQueue.some(en => en.receivedSize < en.meta?.size);
   if (enviando || recebendo) {
     e.preventDefault();
