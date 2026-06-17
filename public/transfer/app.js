@@ -21,6 +21,10 @@ let receivedFilesCount = 0;
 let sendFilesCount     = 0;
 let sendFilesTotal    = 0;
 
+// Contadores de tempo
+let sendStartTime = 0;
+let receiveStartTime = 0;
+
 // Modos de operação
 let peerMode = 'memory'; // modo local de recepção
 let peerRecievedMode = 'memory'; // mode de recepção remoto
@@ -36,7 +40,7 @@ let targetDirHandle = null;
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const CHUNK_SIZE        =  250 * 1024;               // 250 KB — 6 KB para o header
+const CHUNK_SIZE        = 250 * 1024;                // 250 KB — 6 KB para o header
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
 const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
 
@@ -102,7 +106,7 @@ function createQueueItem(listEl, name, size) {
 
 function setItemStatus(li, status) {
   li.className = `status-${status}`;
-  const icons = { pending: '📄', active: '🔄', done: '✅', error: '❌' };
+  const icons = { pending: '📄', active: '🔄', finalizing: '💾', done: '✅', error: '❌' };
   li.querySelector('.file-icon').textContent = icons[status] ?? '📄';
 }
 
@@ -140,11 +144,11 @@ async function connect() {
   });
 
   setDot('ws', 'yellow');
-  log(`Conectando em ${url}…`, 'info');
+  log(`Conectando ao sinalizador: ${url}`, 'info');
 
   socket.on('connect', async () => {
     setDot('ws', 'green');
-    log('Socket.IO conectado!', 'success');
+    log('Conectado ao servidor de sinalização!', 'success');
     socket.emit('join-room', { room });
     setDot('room', 'green');
     log(`Entrou na sala "${room}"`, 'success');
@@ -303,6 +307,8 @@ function handleControlMessage(msg) {
       
       if(peerMode === 'disk') {
         showAcceptTransfer();
+      } else {
+        receiveStartTime = Date.now();
       }
       
       break;
@@ -358,7 +364,8 @@ function handleControlMessage(msg) {
     }
 
     case 'finished' : {
-      log(`Transferência concluida: ${fmtMB(msg.data.size)} foram enviados...`, 'success');
+      const elapsed = ((Date.now() - sendStartTime) / 1000 / 60).toFixed(2);
+      log(`Transferência concluída: ${fmtMB(msg.data.size)} em ${elapsed}min`, 'success');
       $('send-files-count').innerText = `${sendFilesCount} de ${sendFilesTotal}`;
       releaseWakeLock();
       break;
@@ -384,8 +391,7 @@ async function handleChunk(buf) {
   }
 
   // Fila sequencial: Garante que os chunks sejam escritos um após o outro
-  entry.writeLock = entry.writeLock.then(async () => {
-    if (entry.receivedSize === 0) setItemStatus(entry.listItem, 'active');
+  entry.writeLock = entry.writeLock.then(async () => { 
     await writeChunk(entry, chunk);
     updateProgress(entry);
     if (!entry.finalized && entry.receivedSize >= entry.meta.size) {
@@ -400,22 +406,23 @@ function showAcceptTransfer() {
   $('transferFileSize').innerText    = fmtMB(expectedTotalSize);
   $('acceptContainer').style.display = 'flex';
   $('receiveQueue').querySelectorAll('li').forEach(li => setItemStatus(li, 'pending'));
-  log(`🔔 Aguardando aceite — ${fmtMB(expectedTotalSize)}`, 'warn');
+  log(`Aguardando aceite — ${fmtMB(expectedTotalSize)} 🔔 `, 'warn');
 }
+
 
 async function acceptEntry() {
   await requestWakeLock();
+  receiveStartTime = Date.now(); // Para medir o tempo de transferência de recepção
   
   const acceptBtn = $('btn-accept');
   acceptBtn.disabled  = true;
   acceptBtn.innerText = 'Processando...';
   
-  
   // Pede pasta destino
   try {
     if (!targetDirHandle) {
       targetDirHandle = await window.showDirectoryPicker();
-      log(`📁 Pasta destino: "${targetDirHandle.name}"`, 'info');
+      log(`Pasta destino: "${targetDirHandle.name}" 📁 `, 'info');
     }
   } catch (err) {
     if (err.name !== 'AbortError') console.error(err);
@@ -442,7 +449,7 @@ async function acceptEntry() {
       
     } catch (err) {
       e.isStreaming = false;
-      log(`⚠️ "${e.meta.name}" em memória (${err.message})`, 'warn');
+      log(`"${e.meta.name}" em memória (${err.message})`, 'warn');
     }
   }
 
@@ -484,12 +491,20 @@ async function writeChunk(entry, data) {
       // Lazy load: abre o fluxo de escrita apenas na chegada do primeiro chunk
       if (!entry.writable && entry.fileHandle) {
         entry.writable = await entry.fileHandle.createWritable();
+        setItemStatus(entry.listItem, 'active');
+        log(`Salvando "${entry.meta.name}" em disco…`, 'receive');
       }
       await entry.writable.write(data);
     } catch (err) {
-      log(`❌ Erro ao salvar chunk de "${entry.meta.name}"`, 'error');
+      setItemStatus(entry.listItem, 'error');
+      console.error('Error writing chunk to disk:', err.message);
+      log(`Erro ao salvar chunk de "${entry.meta.name}": ${err.name} — ${err.message}`, 'error');
     }
   } else {
+    if(entry.buffers.length === 0) {
+      setItemStatus(entry.listItem, 'active');
+      log(`Salvando "${entry.meta.name}" em memória…`, 'receive');
+    }
     entry.buffers.push(data);
   }
 
@@ -499,10 +514,14 @@ async function writeChunk(entry, data) {
 // ─── Finalização de recepção ─────────────────────────────────────────────────
 async function finalizeReceive(entry) {
   if (entry.isStreaming && entry.writable) {
+    setItemStatus(entry.listItem, 'finalizing'); // novo status — "finalizando..."
+    log(`Finalizando "${entry.meta.name}" — gravando no disco (pode levar um tempo em arquivos grandes)…`, 'info');
     try {
       await entry.writable.close();
     } catch (err) {
-      log(`❌ Erro ao fechar "${entry.meta.name}": ${err.message}`, 'error');
+      setItemStatus(entry.listItem, 'error');
+      console.error(`Error closing "${entry.meta.name}" on disk: ${err.name} - ${err.message}`);
+      log(`Erro ao fechar "${entry.meta.name}": ${err.name} - ${err.message}`, 'error');
     }
     log(`${entry.meta.name} salvo em disco`, 'receive');
   } else {
@@ -533,9 +552,12 @@ async function finalizeReceive(entry) {
   
   $('received-files-count').innerText = `${receivedFilesCount} de ${expectedFilesCount}`;
 
+  // Se todos os arquivos foram recebidos - termino da transferência
   if (expectedFilesCount > 0 && receivedFilesCount >= expectedFilesCount) {
     log(`Todos os ${expectedFilesCount} arquivos com tamanho ${fmtMB(expectedTotalSize)} foram recebidos! 🎉 `, 'success');
     dataChannel.send(JSON.stringify({ type: 'finished', data: { size: expectedTotalSize } }));
+    const elapsed = ((Date.now() - receiveStartTime) / 1000 / 60).toFixed(2);
+    log(`Transferência concluída: Todos os ${expectedFilesCount} arquivos com tamanho ${fmtMB(expectedTotalSize)} foram recebidos em ${elapsed}min 🎉`, 'success');
     targetDirHandle    = null;
     expectedFilesCount = 0;
     receivedFilesCount = 0;
@@ -563,7 +585,7 @@ function offerFiles() {
 
   for (const file of files) {
     if (file.size > MAX_FILE_SIZE && peerRecievedMode === 'memory') {
-      log(`❌ ${file.name} arquivo muito grande para enviar em memória — pulado`, 'error');
+      log(`${file.name} arquivo muito grande para enviar em memória — pulado`, 'error');
       continue;
     }
     const li = createQueueItem($('sendQueue'), file.name, file.size);
@@ -573,17 +595,18 @@ function offerFiles() {
 
 async function sendFiles() {
   if (!dataChannel || dataChannel.readyState !== 'open') {
-    log('⚠️ Canal ainda não está aberto', 'warn');
+    log('Canal ainda não está aberto', 'warn');
     return;
   }
   const toSend = [...sendQueue];
   sendQueue = [];
-  if (toSend.length === 0) { log('⚠️ Nenhum arquivo na fila', 'warn'); return; }
+  if (toSend.length === 0) { log('Nenhum arquivo na fila', 'warn'); return; }
 
   $('sendContainer').style.display = 'none';
   $('btn-send').disabled = true;
 
   sendAbortController = new AbortController();
+  sendStartTime = Date.now(); // Para medir o tempo de transferência de envio
 
   // 1. Envia a oferta de lote
   dataChannel.send(JSON.stringify({
@@ -592,7 +615,7 @@ async function sendFiles() {
   }));
 
   sendFilesTotal = toSend.length;
-  $('send-files-count').textContent = sendFilesTotal;
+  $('send-files-count').textContent = sendFilesCount + ' de ' + sendFilesTotal;
 
   // 2. Envia a lista de metadados de todos os arquivos
   for (const item of toSend) {
@@ -691,7 +714,7 @@ function sendSingleFile({ file, listItem, id }, signal) {
 
     reader.onerror = () => {
       setItemStatus(listItem, 'error');
-      log(`❌ Erro ao ler ${file.name}`, 'error');
+      log(`Erro ao ler ${file.name}`, 'error');
       resolve();
     };
 

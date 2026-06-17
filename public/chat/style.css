@@ -210,6 +210,7 @@ input:focus { border-color: var(--accent); }
   color: rgba(255, 255, 255, 0.4);
   margin-bottom: 0.2rem;
   font-family: var(--font-mono);
+  text-align: right;
 }
 
 .chat-message.peer .chat-time {

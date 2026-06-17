@@ -162,6 +162,7 @@ input:focus { border-color: var(--accent); }
 
 #sendQueueContainer,
 #receiveQueueContainer {
+  position: relative;
   width: 50%;
   flex-shrink: 0;
   min-width: 0;
@@ -206,6 +207,7 @@ input:focus { border-color: var(--accent); }
 /* Estados do item na fila */
 .file-queue li.status-pending  { border-left: 4px solid #999; }
 .file-queue li.status-active   { border-left: 4px solid #2196F3; background: rgba(33, 150, 243, 0.1); }
+.file-queue li.status-finalizing { border-left: 4px solid #FFC107; background: rgba(255, 193, 7, 0.1); }
 .file-queue li.status-done     { border-left: 4px solid #4CAF50; background: rgba(76, 175, 80, 0.1); }
 .file-queue li.status-error    { border-left: 4px solid #f44336; background: rgba(244, 67, 54, 0.1); }
 
@@ -264,6 +266,17 @@ li.status-error .file-progress-bar { background: #f44336; }
   border: 2px solid #4CAF50; 
   border-radius: 8px; 
   margin: 10px 0;
+
+  /** Sobrepor div de fila **/
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80%;
+  text-align: center;
+  background: white; /* ou a cor de fundo do seu tema, para não ficar transparente sobre a lista */
+  color: black;
+  z-index: 10;
 }
 
 #btn-send,

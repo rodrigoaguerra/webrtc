@@ -45,8 +45,8 @@ function appendMessage(text, sender, senderName = 'Alguém') {
   msgEl.innerHTML = `
     <div class="chat-bubble">
       <span class="chat-sender-name">${senderName}</span>
-      <span class="chat-time">${now()}</span>
       <p class="chat-text"></p>
+      <span class="chat-time">${now()}</span>
     </div>
   `;
   
