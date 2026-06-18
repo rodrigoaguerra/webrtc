@@ -311,9 +311,14 @@ function handleControlMessage(msg) {
       $('received-files-count').innerText = receivedFilesCount + ' de ' + expectedFilesCount;
       log(`Lote de ${expectedFilesCount} arquivo(s) · ${fmtMB(expectedTotalSize)}`, 'send');
       
+      /**
+       * se for em modo 'disk' ele aguarda o aceite e inicia o timer de recebimento e travar suspensão do browser
+       * se for em modo 'memory' ele trava o modo suspensão e inicia o timer de recebimento
+       */
       if(peerMode === 'disk') {
         showAcceptTransfer();
       } else {
+        requestWakeLock();
         receiveStartTime = Date.now();
       }
       
