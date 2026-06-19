@@ -7,6 +7,7 @@ const peerNames = {}; // { socketId: "Nome do Usuário" }
 
 // ─── Estado Global de Transferência ─────────────────────────────────────────
 const CHUNK_SIZE = 64 * 1024; // 64KB por chunk
+const MAX_FILE_SIZE = 100 * 1024 * 1024; // 100 MB
 const fileTransfers = {}; // { transferId: { chunks, received, total, name, type, size } }
 
 // ─── Estado Global de Gravação ──────────────────────────────────────────────
@@ -63,6 +64,32 @@ function appendMessage(text, sender, senderName = 'Alguém') {
   
   msgEl.querySelector('.chat-text').textContent = text;
   container.appendChild(msgEl);
+  container.scrollTop = container.scrollHeight;
+}
+
+// ─── Adicionar Erro na UI ───────────────────────────────────────────────
+function appendFileError(fileName, sizeMB) {
+  const container = $('messageContainer');
+  const el = document.createElement('div');
+  el.style.cssText = `
+    background: rgba(239,68,68,0.12);
+    border: 1px solid rgba(239,68,68,0.35);
+    border-radius: 10px;
+    padding: 10px 14px;
+    margin: 4px 0;
+    font-size: 13px;
+    color: #f87171;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  `;
+  el.innerHTML = `
+    <span style="font-size:18px;">🚫</span>
+    <div>
+      <strong>${fileName}</strong><br>
+      <span style="opacity:.8;">Arquivo muito grande (${sizeMB} MB) — limite é 100 MB.</span>
+    </div>`;
+  container.appendChild(el);
   container.scrollTop = container.scrollHeight;
 }
 
@@ -366,6 +393,15 @@ function appendFile(blob, fileName, mimeType, senderName) {
 }
 
 async function sendFile(file) {
+  
+  // ── Validação de tamanho ──
+  if (file.size > MAX_FILE_SIZE) {
+    const sizeMB = (file.size / 1024 / 1024).toFixed(1);
+    appendFileError(file.name, sizeMB);
+    log(`"${file.name}" bloqueado — ${sizeMB} MB excede o limite de 100 MB.`, 'error');
+    return;
+  }
+
   const transferId = crypto.randomUUID();
   const arrayBuffer = await file.arrayBuffer();
   const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
@@ -441,13 +477,33 @@ async function startRecording(mode) {
   recChunks = [];
 
   // Escolhe o melhor codec disponível
-  const mimeType = mode === 'video'
-    ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
-        ? 'video/webm;codecs=vp9,opus'
-        : 'video/webm')
-    : (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
-        ? 'audio/webm;codecs=opus'
-        : 'audio/ogg');
+  const mimeType = (() => {
+    if (mode === 'video') {
+      const videoTypes = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+        'video/mp4;codecs=avc1,mp4a.40.2', // Safari / alguns Firefox
+        'video/mp4',
+      ];
+      return videoTypes.find(t => MediaRecorder.isTypeSupported(t)) ?? '';
+    } else {
+      const audioTypes = [
+        'audio/webm;codecs=opus',
+        'audio/ogg;codecs=opus',  // Firefox prefere ogg
+        'audio/ogg',
+        'audio/mp4',
+        'audio/webm',
+      ];
+      return audioTypes.find(t => MediaRecorder.isTypeSupported(t)) ?? '';
+    }
+  })();
+
+  if (!mimeType) {
+    log('Nenhum formato de gravação suportado neste navegador.', 'error');
+    recStream.getTracks().forEach(t => t.stop());
+    return;
+  }
 
   mediaRecorder = new MediaRecorder(recStream, { mimeType });
 
@@ -459,9 +515,21 @@ async function startRecording(mode) {
     recStream.getTracks().forEach(t => t.stop());
     hideRecIndicator();
 
+    // Gravação concluida
     const blob     = new Blob(recChunks, { type: mimeType });
-    const ext      = mode === 'video' ? 'webm' : 'webm';
+    const ext = mimeType.includes('mp4') ? 'mp4'
+          : mimeType.includes('ogg') ? 'ogg'
+          : 'webm';
     const fileName = `${mode}-${Date.now()}.${ext}`;
+
+    // ── Validação de tamanho na gravação ──
+    if (blob.size > MAX_FILE_SIZE) {
+      const sizeMB = (blob.size / 1024 / 1024).toFixed(1);
+      appendFileError(fileName, sizeMB);
+      log(`Gravação bloqueada — ${sizeMB} MB excede o limite de 100 MB.`, 'error');
+      return;
+    }
+
 
     // Mostra localmente
     appendFile(blob, fileName, mimeType, 'Você');
