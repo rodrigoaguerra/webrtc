@@ -53,12 +53,18 @@
 
   <section class="card">
     <div class="card-title"><span>Enviar mensagem</span></div>
-    <div class="controls">
-      <div style="grid-column: span 2;">
+    <div class="controls" style="grid-template-columns: 1fr auto;">
+      <div class="message-input-container">
         <label>Mensagem</label>
-        <input id="messageInput" type="text" placeholder="Digite sua mensagem..." disabled />
+        <div class="message-input">
+          <div class="btn btn-secondary" id="btn-attach" style="cursor:pointer; display:flex; align-items:center; justify-content:center; width:40px;">
+            📎
+            <input id="fileInput" type="file" accept="image/*,video/*,audio/*,application/pdf" multiple style="display:none;" disabled />
+          </div>
+          <input id="messageInput" type="text" placeholder="Digite sua mensagem..." disabled />
+          <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
+        </div>
       </div>
-      <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
     </div>
     <p class="hint">Conecte-se a uma sala para começar a conversar.</p>
   </section>

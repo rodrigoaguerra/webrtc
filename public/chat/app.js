@@ -5,6 +5,10 @@ const dataChannels = {};  // { socketId: RTCDataChannel }
 let myRoom = '';
 const peerNames = {}; // { socketId: "Nome do Usuário" }
 
+// ─── Estado Global de Transferência ─────────────────────────────────────────
+const CHUNK_SIZE = 64 * 1024; // 64KB por chunk
+const fileTransfers = {}; // { transferId: { chunks, received, total, name, type, size } }
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const now = () => new Date().toLocaleTimeString('pt-BR', { hour12: false });
@@ -202,14 +206,51 @@ function setupDataChannel(userId, channel) {
   };
 
   channel.onmessage = (event) => {
-    try {
-      const msg = JSON.parse(event.data);
-      if (msg.type === 'text') {
-        // 💥 PEGA O NOME REAL SALVO NO NOSSO MAPA, se não achar usa "Membro do Grupo"
-        const senderRealName = peerNames[userId] || "Membro do Grupo";
-        appendMessage(msg.data, 'peer', senderRealName);
+    // Mensagem de controle (JSON)
+    if (typeof event.data === 'string') {
+      try {
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'text') {
+          const senderRealName = peerNames[userId] || "Membro do Grupo";
+          appendMessage(msg.data, 'peer', senderRealName);
+        }
+
+        if (msg.type === 'file-start') {
+          // Inicia recepção de um arquivo
+          fileTransfers[msg.transferId] = {
+            chunks: [],
+            received: 0,
+            total: msg.size,
+            name: msg.name,
+            mimeType: msg.mimeType,
+            senderId: userId
+          };
+          log(`Recebendo "${msg.name}" de ${peerNames[userId] || userId}...`, 'info');
+        }
+
+        if (msg.type === 'file-end') {
+          const transfer = fileTransfers[msg.transferId];
+          if (!transfer) return;
+
+          const blob = new Blob(transfer.chunks, { type: transfer.mimeType });
+          const senderName = peerNames[transfer.senderId] || "Membro do Grupo";
+          appendFile(blob, transfer.name, transfer.mimeType, senderName);
+          log(`"${transfer.name}" recebido com sucesso!`, 'success');
+          delete fileTransfers[msg.transferId];
+        }
+
+      } catch (e) { console.error(e); }
+
+    } else {
+      // Chunk binário (ArrayBuffer)
+      // Identifica a qual transferência pertence pelo primeiro transferId ativo deste peer
+      const activeTransfer = Object.values(fileTransfers).find(t => t.senderId === userId);
+      if (activeTransfer) {
+        activeTransfer.chunks.push(event.data);
+        activeTransfer.received += event.data.byteLength;
       }
-    } catch (e) { console.error(e); }
+    }
   };
 }
 
@@ -232,6 +273,7 @@ function closePeerConnection(userId) {
 function enableInputBox() {
   $('messageInput').disabled = false;
   $('messageInput').focus();
+  $('fileInput').disabled = false;
 }
 
 function enableChatButton() {
@@ -245,6 +287,7 @@ function disableChatButtonOnly() {
 function disableChat() {
   $('messageInput').disabled = true;
   $('btn-send').disabled = true;
+  $('fileInput').disabled = true;
 }
 
 function sendMessage() {
@@ -277,9 +320,94 @@ function sendMessage() {
   }
 }
 
+// ─── Lógica de Envio de Arquivos ──────────────────────────────────────────────────────
+
+function appendFile(blob, fileName, mimeType, senderName) {
+  const container = $('messageContainer');
+  const msgEl = document.createElement('div');
+  msgEl.className = `chat-message ${senderName === 'Você' ? 'me' : 'peer'}`;
+
+  const url = URL.createObjectURL(blob);
+  let mediaHtml = '';
+
+  if (mimeType.startsWith('image/')) {
+    mediaHtml = `<img src="${url}" alt="${fileName}" style="max-width:220px; max-height:200px; border-radius:8px; display:block; margin-top:6px; cursor:pointer;" onclick="window.open(this.src)">`;
+  } else if (mimeType.startsWith('video/')) {
+    mediaHtml = `<video src="${url}" controls style="max-width:260px; border-radius:8px; display:block; margin-top:6px;"></video>`;
+  } else if (mimeType.startsWith('audio/')) { 
+    mediaHtml = `<audio src="${url}" controls style="max-width:260px; border-radius:8px; display:block; margin-top:6px;"></audio>`; 
+  } else {
+    mediaHtml = `<a href="${url}" download="${fileName}" style="color:#7eb8f7;">📥 ${fileName}</a>`;
+  }
+
+  msgEl.innerHTML = `
+    <div class="chat-bubble">
+      <span class="chat-sender-name">${senderName}</span>
+      ${mediaHtml}
+      <span class="chat-file-name" style="font-size:11px; opacity:0.6; display:block; margin-top:4px;">${fileName}</span>
+      <span class="chat-time">${now()}</span>
+    </div>`;
+
+  container.appendChild(msgEl);
+  container.scrollTop = container.scrollHeight;
+}
+
+async function sendFile(file) {
+  const transferId = crypto.randomUUID();
+  const arrayBuffer = await file.arrayBuffer();
+  const totalChunks = Math.ceil(arrayBuffer.byteLength / CHUNK_SIZE);
+
+  const startMsg = JSON.stringify({
+    type: 'file-start',
+    transferId,
+    name: file.name,
+    mimeType: file.type,
+    size: file.size,
+    totalChunks
+  });
+
+  const endMsg = JSON.stringify({ type: 'file-end', transferId });
+
+  // Envia para todos os peers abertos
+  const openChannels = Object.values(dataChannels).filter(dc => dc.readyState === 'open');
+  if (openChannels.length === 0) {
+    log('Nenhum peer conectado para receber o arquivo.', 'warn');
+    return;
+  }
+
+  log(`Enviando "${file.name}" (${(file.size / 1024).toFixed(1)} KB)...`, 'info');
+
+  for (const dc of openChannels) {
+    dc.send(startMsg);
+    for (let offset = 0; offset < arrayBuffer.byteLength; offset += CHUNK_SIZE) {
+      const chunk = arrayBuffer.slice(offset, offset + CHUNK_SIZE);
+      // Aguarda o buffer esvaziar se estiver cheio (backpressure)
+      while (dc.bufferedAmount > 1 * 1024 * 1024) {
+        await new Promise(r => setTimeout(r, 20));
+      }
+      dc.send(chunk);
+    }
+    dc.send(endMsg);
+  }
+
+  // Renderiza localmente também
+  const blob = new Blob([arrayBuffer], { type: file.type });
+  appendFile(blob, file.name, file.type, 'Você');
+  log(`"${file.name}" enviado!`, 'success');
+}
+
 // Bindings de Eventos
 $('btn-send').addEventListener('click', sendMessage);
 $('messageInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
 $('btn-connect').addEventListener('click', connect);
+$('btn-attach').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', async (e) => {
+  const files = Array.from(e.target.files);
+  for (const file of files) {
+    await sendFile(file);
+  }
+  e.target.value = ''; // limpa seleção para poder enviar o mesmo arquivo de novo
+});
+
 
 log('Pronto para conexões em grupo. Configure o servidor e conecte-se.', 'info');
