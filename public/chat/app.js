@@ -524,17 +524,15 @@ $('fileInput').addEventListener('change', async (e) => {
 });
 
 // Gravar Áudio — segurar para gravar
-$('btn-rec-audio').addEventListener('mousedown',  () => startRecording('audio'));
-$('btn-rec-audio').addEventListener('mouseup',    stopRecording);
-$('btn-rec-audio').addEventListener('mouseleave', stopRecording);
-$('btn-rec-audio').addEventListener('touchstart', (e) => { e.preventDefault(); startRecording('audio'); });
-$('btn-rec-audio').addEventListener('touchend',   stopRecording);
+$('btn-rec-audio').addEventListener('pointerdown',  () => startRecording('audio'));
+$('btn-rec-audio').addEventListener('pointerup',    stopRecording);
+$('btn-rec-audio').addEventListener('pointercancel',   stopRecording);
+$('btn-rec-audio').addEventListener('pointerleave', stopRecording);
 
 // Gravar Vídeo — segurar para gravar
-$('btn-rec-video').addEventListener('mousedown',  () => startRecording('video'));
-$('btn-rec-video').addEventListener('mouseup',    stopRecording);
-$('btn-rec-video').addEventListener('mouseleave', stopRecording);
-$('btn-rec-video').addEventListener('touchstart', (e) => { e.preventDefault(); startRecording('video'); });
-$('btn-rec-video').addEventListener('touchend',   stopRecording);
+$('btn-rec-video').addEventListener('pointerdown',  () => startRecording('video'));
+$('btn-rec-video').addEventListener('pointerup',    stopRecording);
+$('btn-rec-video').addEventListener('pointercancel', stopRecording);
+$('btn-rec-video').addEventListener('pointerleave',   stopRecording);
 
 log('Pronto para conexões em grupo. Configure o servidor e conecte-se.', 'info');
