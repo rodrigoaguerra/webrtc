@@ -9,6 +9,13 @@ const peerNames = {}; // { socketId: "Nome do Usuário" }
 const CHUNK_SIZE = 64 * 1024; // 64KB por chunk
 const fileTransfers = {}; // { transferId: { chunks, received, total, name, type, size } }
 
+// ─── Estado Global de Gravação ──────────────────────────────────────────────
+let mediaRecorder  = null;
+let recChunks      = [];
+let recStream      = null;
+let recTimerInterval = null;
+let recSeconds     = 0;
+
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
 const now = () => new Date().toLocaleTimeString('pt-BR', { hour12: false });
@@ -272,8 +279,11 @@ function closePeerConnection(userId) {
 // ─── Lógica de Envio em Grupo ───────────────────────────────────────────────
 function enableInputBox() {
   $('messageInput').disabled = false;
-  $('messageInput').focus();
+  $('btn-attachements').disabled = false;
   $('fileInput').disabled = false;
+  $('btn-rec-audio').disabled   = false;
+  $('btn-rec-video').disabled   = false;
+  $('messageInput').focus();
 }
 
 function enableChatButton() {
@@ -287,7 +297,10 @@ function disableChatButtonOnly() {
 function disableChat() {
   $('messageInput').disabled = true;
   $('btn-send').disabled = true;
+  $('btn-attachements').disabled = true;
   $('fileInput').disabled = true;
+  $('btn-rec-audio').disabled   = true;
+  $('btn-rec-video').disabled   = true;
 }
 
 function sendMessage() {
@@ -396,11 +409,112 @@ async function sendFile(file) {
   log(`"${file.name}" enviado!`, 'success');
 }
 
+// ─── Gravação de Áudio / Vídeo ───────────────────────────────────────────────
+function showRecIndicator(label) {
+  recSeconds = 0;
+  $('rec-label').textContent = label + ' · 0s';
+  $('rec-indicator').style.display = 'flex';
+  recTimerInterval = setInterval(() => {
+    recSeconds++;
+    $('rec-label').textContent = label + ` · ${recSeconds}s`;
+  }, 1000);
+}
+
+function hideRecIndicator() {
+  $('rec-indicator').style.display = 'none';
+  clearInterval(recTimerInterval);
+}
+
+async function startRecording(mode) {
+  // mode = 'audio' | 'video'
+  try {
+    recStream = await navigator.mediaDevices.getUserMedia(
+      mode === 'video'
+        ? { video: true, audio: true }
+        : { audio: true }
+    );
+  } catch (err) {
+    log(`Erro ao acessar mídia: ${err.message}`, 'error');
+    return;
+  }
+
+  recChunks = [];
+
+  // Escolhe o melhor codec disponível
+  const mimeType = mode === 'video'
+    ? (MediaRecorder.isTypeSupported('video/webm;codecs=vp9,opus')
+        ? 'video/webm;codecs=vp9,opus'
+        : 'video/webm')
+    : (MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+        ? 'audio/webm;codecs=opus'
+        : 'audio/ogg');
+
+  mediaRecorder = new MediaRecorder(recStream, { mimeType });
+
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recChunks.push(e.data);
+  };
+
+  mediaRecorder.onstop = async () => {
+    recStream.getTracks().forEach(t => t.stop());
+    hideRecIndicator();
+
+    const blob     = new Blob(recChunks, { type: mimeType });
+    const ext      = mode === 'video' ? 'webm' : 'webm';
+    const fileName = `${mode}-${Date.now()}.${ext}`;
+
+    // Mostra localmente
+    appendFile(blob, fileName, mimeType, 'Você');
+
+    // Envia para os peers
+    const openChannels = Object.values(dataChannels).filter(dc => dc.readyState === 'open');
+    if (openChannels.length === 0) {
+      log('Gravação salva localmente — nenhum peer conectado.', 'warn');
+      return;
+    }
+
+    log(`Enviando ${mode === 'video' ? 'vídeo' : 'áudio'} gravado...`, 'info');
+    const arrayBuffer = await blob.arrayBuffer();
+    const transferId  = crypto.randomUUID();
+
+    const startMsg = JSON.stringify({
+      type: 'file-start', transferId,
+      name: fileName, mimeType, size: blob.size
+    });
+    const endMsg = JSON.stringify({ type: 'file-end', transferId });
+
+    for (const dc of openChannels) {
+      dc.send(startMsg);
+      for (let offset = 0; offset < arrayBuffer.byteLength; offset += CHUNK_SIZE) {
+        while (dc.bufferedAmount > 1 * 1024 * 1024) {
+          await new Promise(r => setTimeout(r, 20));
+        }
+        dc.send(arrayBuffer.slice(offset, offset + CHUNK_SIZE));
+      }
+      dc.send(endMsg);
+    }
+    log(`${mode === 'video' ? 'Vídeo' : 'Áudio'} enviado!`, 'success');
+  };
+
+  mediaRecorder.start(100); // coleta chunks a cada 100ms
+  showRecIndicator(mode === 'video' ? '🎥 Gravando vídeo' : '🎤 Gravando áudio');
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    mediaRecorder.stop();
+  }
+}
+
 // Bindings de Eventos
+$('btn-connect').addEventListener('click', connect);
+
+// Mensagens
 $('btn-send').addEventListener('click', sendMessage);
 $('messageInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') sendMessage(); });
-$('btn-connect').addEventListener('click', connect);
-$('btn-attach').addEventListener('click', () => $('fileInput').click());
+
+// Arquivos 
+$('btn-attachements').addEventListener('click', () => $('fileInput').click());
 $('fileInput').addEventListener('change', async (e) => {
   const files = Array.from(e.target.files);
   for (const file of files) {
@@ -409,5 +523,18 @@ $('fileInput').addEventListener('change', async (e) => {
   e.target.value = ''; // limpa seleção para poder enviar o mesmo arquivo de novo
 });
 
+// Gravar Áudio — segurar para gravar
+$('btn-rec-audio').addEventListener('mousedown',  () => startRecording('audio'));
+$('btn-rec-audio').addEventListener('mouseup',    stopRecording);
+$('btn-rec-audio').addEventListener('mouseleave', stopRecording);
+$('btn-rec-audio').addEventListener('touchstart', (e) => { e.preventDefault(); startRecording('audio'); });
+$('btn-rec-audio').addEventListener('touchend',   stopRecording);
+
+// Gravar Vídeo — segurar para gravar
+$('btn-rec-video').addEventListener('mousedown',  () => startRecording('video'));
+$('btn-rec-video').addEventListener('mouseup',    stopRecording);
+$('btn-rec-video').addEventListener('mouseleave', stopRecording);
+$('btn-rec-video').addEventListener('touchstart', (e) => { e.preventDefault(); startRecording('video'); });
+$('btn-rec-video').addEventListener('touchend',   stopRecording);
 
 log('Pronto para conexões em grupo. Configure o servidor e conecte-se.', 'info');

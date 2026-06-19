@@ -252,6 +252,22 @@ input:focus { border-color: var(--accent); }
   border-bottom-right-radius: 12px;
 }
 
+/* ── botões de ações ── */
+.btn-actions {
+  display:flex; 
+  align-items:center; 
+  justify-content:center; 
+  width:40px;
+  font-size:16px;
+  color:var(--text);
+}
+
+/* ── Animação do indicador de gravação ── */
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
 /* ── Log ── */
 .log {
   background: #070b14;

@@ -57,12 +57,35 @@
       <div class="message-input-container">
         <label>Mensagem</label>
         <div class="message-input">
-          <div class="btn btn-secondary" id="btn-attach" style="cursor:pointer; display:flex; align-items:center; justify-content:center; width:40px;">
+          
+          <!-- Mensagem de texto -->  
+          <input id="messageInput" type="text" placeholder="Digite sua mensagem..." disabled />
+          
+          <!-- Anexo de arquivo -->
+          <button id="btn-attachements" class="btn btn-secondary btn-actions" 
+            title="Anexar arquivos" disabled>
             📎
             <input id="fileInput" type="file" accept="image/*,video/*,audio/*,application/pdf" multiple style="display:none;" disabled />
-          </div>
-          <input id="messageInput" type="text" placeholder="Digite sua mensagem..." disabled />
+          </button>
+
+          <!-- Gravar Áudio -->
+          <button id="btn-rec-audio" class="btn btn-secondary btn-actions"
+            title="Segurar para gravar áudio"
+            disabled>🎤</button>
+
+          <!-- Gravar Vídeo -->
+          <button id="btn-rec-video" class="btn btn-secondary btn-actions"
+            title="Segurar para gravar vídeo"
+            disabled>🎥</button>
+            
           <button class="btn btn-primary" id="btn-send" disabled>Enviar</button>
+        </div>
+
+        <!-- Indicador de gravação -->
+        <div id="rec-indicator" style="display:none; margin-top:6px; font-size:12px;
+          color:#ef4444; font-family:var(--font-mono); align-items:center; gap:6px;">
+          <span style="animation: blink 1s infinite;">⏺</span>
+          <span id="rec-label">Gravando...</span>
         </div>
       </div>
     </div>
