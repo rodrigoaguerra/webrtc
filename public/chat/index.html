@@ -47,8 +47,27 @@
 
   <section class="card">
     <div class="card-title"><span>Mensagens</span></div>
-    <div id="messageContainer" class="message-container">
+    <div class="chat-layout">
+      <!-- Lista de usuários -->
+      <div class="user-list" id="userList">
+        <div class="user-list-title">Participantes</div>
+
+        <!-- Botão "Todos" (modo grupo) -->
+        <div class="user-item active" id="user-item-all" onclick="selectTarget(null)">
+          <span class="user-avatar">👥</span>
+          <span class="user-name">Todos</span>
+        </div>
+
+        <!-- Você mesmo -->
+        <div class="user-item user-self" id="user-item-me">
+          <span class="user-avatar">🟢</span>
+          <span class="user-name" id="user-name-me">Você</span>
+        </div>
       </div>
+
+      <!-- Container de mensagens -->
+      <div id="messageContainer" class="message-container"></div>
+    </div>
   </section>
 
   <section class="card">
@@ -56,6 +75,11 @@
     <div class="controls" style="grid-template-columns: 1fr auto;">
       <div class="message-input-container">
         <label>Mensagem</label>
+        <!-- Indicador de modo privado -->
+        <div class="private-mode-indicator" id="private-indicator">
+          <span>🔒 Para: <strong id="private-target-name"></strong></span>
+          <button onclick="selectTarget(null)" title="Voltar para grupo">✕</button>
+        </div>
         <div class="message-input">
           
           <!-- Mensagem de texto -->  

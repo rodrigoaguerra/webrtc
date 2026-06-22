@@ -4,6 +4,8 @@ const peers = {};         // { socketId: RTCPeerConnection }
 const dataChannels = {};  // { socketId: RTCDataChannel }
 let myRoom = '';
 const peerNames = {}; // { socketId: "Nome do Usuário" }
+let privateTarget = null; // socketId do destinatário privado, ou null = grupo
+let myName = '';          // nome local (preencher no connect)
 
 // ─── Estado Global de Transferência ─────────────────────────────────────────
 const CHUNK_SIZE = 64 * 1024; // 64KB por chunk
@@ -16,6 +18,7 @@ let recChunks      = [];
 let recStream      = null;
 let recTimerInterval = null;
 let recSeconds     = 0;
+let recStart  = false;
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 const $ = id => document.getElementById(id);
@@ -93,6 +96,23 @@ function appendFileError(fileName, sizeMB) {
   container.scrollTop = container.scrollHeight;
 }
 
+// ─── Adicionar Mensagem Privada na UI ─────────────────────────────────────
+function appendPrivateMessage(text, sender, senderName, isIncoming) {
+  const container = $('messageContainer');
+  const msgEl = document.createElement('div');
+  msgEl.className = `chat-message ${sender}`;
+  msgEl.innerHTML = `
+    <div class="chat-bubble">
+      <span class="badge-private">🔒 PRIVADO</span>
+      <span class="chat-sender-name">${senderName}</span>
+      <p class="chat-text"></p>
+      <span class="chat-time">${now()}</span>
+    </div>`;
+  msgEl.querySelector('.chat-text').textContent = text;
+  container.appendChild(msgEl);
+  container.scrollTop = container.scrollHeight;
+}
+
 // ─── WebRTC config ───────────────────────────────────────────────────────────
 const rtcConfig = {
   iceServers: [
@@ -104,7 +124,7 @@ const rtcConfig = {
 // ─── Conexão Socket.IO ───────────────────────────────────────────────────────
 async function connect() {
   const url  = $('srv').value.trim();
-  const myName = $('username').value.trim() || "Anônimo"; // Pega o nome do input
+  myName = $('username').value.trim() || "Anônimo"; // Pega o nome do input
   myRoom = $('room').value.trim();
 
   socket = io(url, { reconnection: true, reconnectionAttempts: Infinity, reconnectionDelay: 1000 });
@@ -121,6 +141,7 @@ async function connect() {
     
     setDot('room', 'green');
     log(`Você entrou como "${myName}" no grupo: "${myRoom}"`, 'success');
+    $('user-name-me').textContent = `${myName} (você)`;
     $('btn-connect').disabled = true;
     $('username').disabled = true; // Bloqueia o input de nome após conectar
     enableInputBox();
@@ -130,6 +151,7 @@ async function connect() {
   socket.on('user-connected', async ({ id, username }) => {
     peerNames[id] = username; // Salva o nome dele associado ao ID
     log(`${username} entrou no grupo. Criando conexão direta...`, 'info');
+    addUserToList(id, username);
     await initPeer(id, true); 
   });
 
@@ -138,6 +160,7 @@ async function connect() {
     if (!offer) return;
     peerNames[from] = username; // Garante que salvou o nome de quem ofertou
     log(`Conectando de forma direta com ${username}...`, 'info');
+    addUserToList(from, username);
     
     const pc = await initPeer(from, false);
     try {
@@ -170,6 +193,7 @@ async function connect() {
   // 5. Usuário saiu do grupo (Modificado para ler o objeto)
   socket.on('user-disconnected', ({ id, username }) => {
     log(`${username || 'Um participante'} saiu do grupo.`, 'warn');
+    removeUserFromList(id);   
     closePeerConnection(id);
     delete peerNames[id]; // Limpa o nome da memória
   });
@@ -274,6 +298,11 @@ function setupDataChannel(userId, channel) {
           delete fileTransfers[msg.transferId];
         }
 
+        if (msg.type === 'private') {
+          const senderName = peerNames[userId] || 'Membro do Grupo';
+          appendPrivateMessage(msg.data, 'peer', senderName, true);
+        }
+
       } catch (e) { console.error(e); }
 
     } else {
@@ -335,33 +364,31 @@ function sendMessage() {
   const text = input.value.trim();
   if (!text) return;
 
-  const msgPacket = { type: 'text', data: text };
-  const dacString = JSON.stringify(msgPacket);
-  
-  let sentCount = 0;
-
-  // 💥 O SEGREDO DO GRUPO: Varre todos os canais abertos e envia a mensagem para cada um deles
-  Object.keys(dataChannels).forEach(userId => {
-    const dc = dataChannels[userId];
-    if (dc && dc.readyState === 'open') {
-      dc.send(dacString);
-      sentCount++;
+  if (privateTarget) {
+    // ── Modo privado: envia só para o peer selecionado ──
+    const dc = dataChannels[privateTarget];
+    if (!dc || dc.readyState !== 'open') {
+      log(`Não foi possível enviar: peer desconectado.`, 'error');
+      return;
     }
-  });
-
-  // Renderiza a sua própria mensagem na tela
-  appendMessage(text, 'me', 'Você');
+    dc.send(JSON.stringify({ type: 'private', data: text }));
+    appendPrivateMessage(text, 'me', 'Você', false);
+  } else {
+    // ── Modo grupo: envia para todos ──
+    const packet = JSON.stringify({ type: 'text', data: text });
+    let sent = 0;
+    Object.values(dataChannels).forEach(dc => {
+      if (dc.readyState === 'open') { dc.send(packet); sent++; }
+    });
+    appendMessage(text, 'me', 'Você');
+    if (!sent) log('Nenhum peer conectado para receber a mensagem.', 'warn');
+  }
   
   input.value = '';
   input.focus();
-
-  if(sentCount === 0) {
-    log('Sua mensagem foi renderizada localmente, mas não há outros peers conectados na malha para recebê-la.', 'warn');
-  }
 }
 
 // ─── Lógica de Envio de Arquivos ──────────────────────────────────────────────────────
-
 function appendFile(blob, fileName, mimeType, senderName) {
   const container = $('messageContainer');
   const msgEl = document.createElement('div');
@@ -448,6 +475,8 @@ async function sendFile(file) {
 // ─── Gravação de Áudio / Vídeo ───────────────────────────────────────────────
 function showRecIndicator(label) {
   recSeconds = 0;
+  $('btn-rec-audio').innerHTML = '<span class="rec">⏺</span>';
+  $('btn-rec-video').innerHTML = '<span class="rec">⏺</span>';
   $('rec-label').textContent = label + ' · 0s';
   $('rec-indicator').style.display = 'flex';
   recTimerInterval = setInterval(() => {
@@ -458,11 +487,20 @@ function showRecIndicator(label) {
 
 function hideRecIndicator() {
   $('rec-indicator').style.display = 'none';
+  $('btn-rec-audio').innerHTML = '🎤';
+  $('btn-rec-video').innerHTML = '🎥';
   clearInterval(recTimerInterval);
 }
 
 async function startRecording(mode) {
-  // mode = 'audio' | 'video'
+  
+  if(recStart) {
+    stopRecording();
+    return;
+  }
+
+  recStart = true;
+
   try {
     recStream = await navigator.mediaDevices.getUserMedia(
       mode === 'video'
@@ -471,6 +509,7 @@ async function startRecording(mode) {
     );
   } catch (err) {
     log(`Erro ao acessar mídia: ${err.message}`, 'error');
+
     return;
   }
 
@@ -502,6 +541,8 @@ async function startRecording(mode) {
   if (!mimeType) {
     log('Nenhum formato de gravação suportado neste navegador.', 'error');
     recStream.getTracks().forEach(t => t.stop());
+    stopRecording();
+    recStart = false;
     return;
   }
 
@@ -562,6 +603,8 @@ async function startRecording(mode) {
       dc.send(endMsg);
     }
     log(`${mode === 'video' ? 'Vídeo' : 'Áudio'} enviado!`, 'success');
+
+    recStart = false;
   };
 
   mediaRecorder.start(100); // coleta chunks a cada 100ms
@@ -574,6 +617,53 @@ function stopRecording() {
   }
 }
 
+// ─── Lista de Usuários ────────────────────────────────────────────────────────
+
+function addUserToList(socketId, name) {
+  // Evita duplicata
+  if ($(`user-item-${socketId}`)) return;
+
+  const item = document.createElement('div');
+  item.className = 'user-item';
+  item.id = `user-item-${socketId}`;
+  item.title = `Mensagem privada para ${name}`;
+  item.innerHTML = `
+    <span class="user-avatar">👤</span>
+    <span class="user-name">${name}</span>`;
+  item.addEventListener('click', () => selectTarget(socketId));
+  $('userList').appendChild(item);
+}
+
+function removeUserFromList(socketId) {
+  $(`user-item-${socketId}`)?.remove();
+  // Se estava em privado com ele, volta para grupo
+  if (privateTarget === socketId) selectTarget(null);
+}
+
+function selectTarget(socketId) {
+  privateTarget = socketId;
+
+  // Atualiza destaque na lista
+  document.querySelectorAll('.user-item').forEach(el => el.classList.remove('active'));
+  const activeEl = socketId ? $(`user-item-${socketId}`) : $('user-item-all');
+  activeEl?.classList.add('active');
+
+  // Atualiza indicador e estilo do input
+  const indicator = $('private-indicator');
+  const input     = $('messageInput');
+  if (socketId) {
+    $('private-target-name').textContent = peerNames[socketId] || socketId;
+    indicator.classList.add('visible');
+    input.classList.add('private');
+    input.placeholder = `Mensagem privada para ${peerNames[socketId]}...`;
+  } else {
+    indicator.classList.remove('visible');
+    input.classList.remove('private');
+    input.placeholder = 'Digite sua mensagem...';
+  }
+  input.focus();
+}
+
 // Bindings de Eventos
 $('btn-connect').addEventListener('click', connect);
 
@@ -583,6 +673,7 @@ $('messageInput').addEventListener('keydown', (e) => { if (e.key === 'Enter') se
 
 // Arquivos 
 $('btn-attachements').addEventListener('click', () => $('fileInput').click());
+
 $('fileInput').addEventListener('change', async (e) => {
   const files = Array.from(e.target.files);
   for (const file of files) {
@@ -592,15 +683,9 @@ $('fileInput').addEventListener('change', async (e) => {
 });
 
 // Gravar Áudio — segurar para gravar
-$('btn-rec-audio').addEventListener('pointerdown',  () => startRecording('audio'));
-$('btn-rec-audio').addEventListener('pointerup',    stopRecording);
-$('btn-rec-audio').addEventListener('pointercancel',   stopRecording);
-$('btn-rec-audio').addEventListener('pointerleave', stopRecording);
+$('btn-rec-audio').addEventListener('click',  () => startRecording('audio'));
 
 // Gravar Vídeo — segurar para gravar
-$('btn-rec-video').addEventListener('pointerdown',  () => startRecording('video'));
-$('btn-rec-video').addEventListener('pointerup',    stopRecording);
-$('btn-rec-video').addEventListener('pointercancel', stopRecording);
-$('btn-rec-video').addEventListener('pointerleave',   stopRecording);
+$('btn-rec-video').addEventListener('click',  () => startRecording('video'));
 
 log('Pronto para conexões em grupo. Configure o servidor e conecte-se.', 'info');
