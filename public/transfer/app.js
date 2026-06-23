@@ -38,16 +38,11 @@ let sendAbortController = null;
 // Handle da pasta destino (File System Access API)
 let targetDirHandle = null;
 
-// Contadores de envio
-let inFlightBytes = 0;
-
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const MAX_IN_FLIGHT_BYTES = MAX_FILE_SIZE            // 1 GB
+let   CHUNK_SIZE        = 250 * 1024;                // valor inicial — recalculado no onopen com base no limite real do canal
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
 const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
-const CONCURRENT        = 10;                        // 10 arquivos em paralelo
-let   CHUNK_SIZE        = 250 * 1024;                // valor inicial — recalculado no onopen com base no limite real do canal
 
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -651,50 +646,22 @@ async function sendFiles() {
 
   log(`Enviando ${toSend.length} arquivo(s) sequencialmente`, 'info');
 
-  const executing = new Set();
-
   for (const item of toSend) {
     if (sendAbortController.signal.aborted) break;
 
-    // 🔥 ESPERA espaço no buffer global (bytes em voo)
-    while (inFlightBytes + item.file.size > MAX_IN_FLIGHT_BYTES && executing.size > 0) {
-      await Promise.race(executing);
-    }
+    await sendSingleFile(item, sendAbortController.signal);
 
-    // 🔥 Reserva espaço
-    inFlightBytes += item.file.size;
+    if (sendAbortController.signal.aborted) break;
 
-    const task = (async () => {
-      try {
-        await sendSingleFile(item, sendAbortController.signal);
-
-        // Aguarda ACK individual (mantém sua lógica intacta)
-        await new Promise((resolve) => {
-          receivedAckResolvers.set(item.id, resolve);
-
-          dataChannel.addEventListener('close', () => {
-            receivedAckResolvers.delete(item.id);
-            resolve();
-          }, { once: true });
-        });
-      } finally {
-        // 🔥 Libera espaço quando terminar
-        inFlightBytes -= item.file.size;
-      }
-    })();
-
-    executing.add(task);
-
-    task.finally(() => executing.delete(task));
-
-    // 🔥 Limite de concorrência (usa seu CONCURRENT)
-    if (executing.size >= CONCURRENT) {
-      await Promise.race(executing);
-    }
+    // Aguarda ACK do receptor antes de enviar o próximo
+    await new Promise((resolve) => {
+      receivedAckResolvers.set(item.id, resolve);
+      dataChannel.addEventListener('close', () => {
+        receivedAckResolvers.delete(item.id);
+        resolve();
+      }, { once: true });
+    });
   }
-
-  // Aguarda os restantes
-  await Promise.all(executing);
 
   await releaseWakeLock();
 
