@@ -42,11 +42,11 @@ let targetDirHandle = null;
 let inFlightBytes = 0;
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
-const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
-const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
-const CONCURRENT        = 10;                        // 10 arquivos em paralelo
-let   CHUNK_SIZE        = 250 * 1024;                // valor inicial — recalculado no onopen com base no limite real do canal
+const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;   // 1.5 GB
+const BUFFER_HIGH_WATER = 32 * 1024 * 1024;           // 32 MB — pausa envio
+const BUFFER_LOW_WATER  = 16 * 1024 * 1024;           // 16 MB — retoma envio
+const CONCURRENT        = 4;                          // 4 arquivos em paralelo
+let   CHUNK_SIZE        = 250 * 1024;                 // 250 KB valor inicial — recalculado no onopen com base no limite real do canal
 
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -702,67 +702,71 @@ async function sendFiles() {
   $('folderInput').value = '';
 }
 
-function sendSingleFile({ file, listItem, id }, signal) {
-  return new Promise((resolve) => {
-    setItemStatus(listItem, 'active');
-    log(`Enviando: ${file.name} (${fmtMB(file.size)})`, 'info');
+async function sendSingleFile({ file, listItem, id }, signal) {
+  setItemStatus(listItem, 'active');
+  log(`Enviando: ${file.name} (${fmtMB(file.size)})`, 'info');
 
-    let offset = 0;
-    const reader = new FileReader();
+  // Encode uma vez só
+  const idBytes = new TextEncoder().encode(id);
+  const headerSize = 4 + idBytes.length;
 
-    const sendNextChunk = async () => {
-      if (signal.aborted) {
-        setItemStatus(listItem, 'error');
-        setItemSize(listItem, '(cancelado)');
-        resolve();
-        return;
+  const reader = file.stream().getReader();
+  let offset = 0;
+  let lastPct = -1;
+
+  const abort = (msg = '(cancelado)') => {
+    setItemStatus(listItem, 'error');
+    setItemSize(listItem, msg);
+  };
+
+  try {
+    while (true) {
+      if (signal.aborted) { abort(); return; }
+
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      let chunkOffset = 0;
+
+      while (chunkOffset < value.byteLength) {
+        if (signal.aborted) { abort(); return; }
+
+        if (dataChannel.bufferedAmount > BUFFER_HIGH_WATER) {
+          await waitForBufferDrain();
+        }
+
+        const slice = value.subarray(chunkOffset, chunkOffset + CHUNK_SIZE); // subarray = sem cópia
+
+        const buf = new Uint8Array(headerSize + slice.byteLength);
+        new DataView(buf.buffer).setUint32(0, idBytes.length, true);
+        buf.set(idBytes, 4);
+        buf.set(slice, headerSize); // sem wrap extra
+
+        dataChannel.send(buf.buffer);
+
+        offset += slice.byteLength;
+        chunkOffset += CHUNK_SIZE;
+
+        const pct = parseFloat(((offset / file.size) * 100).toFixed(1));
+        if (pct - lastPct >= 1 || offset === file.size) {
+          setItemSize(listItem, `${pct}% · ${fmtMB(offset)} de ${fmtMB(file.size)}`);
+          setItemProgress(listItem, pct);
+          lastPct = pct;
+        }
       }
+    }
 
-      if (offset >= file.size) {
-        setItemStatus(listItem, 'done');
-        setItemSize(listItem, `${fmtMB(file.size)}`);
-        setItemProgress(listItem, 100);
-        log(`${file.name} enviado`, 'send');
-        resolve();
-        return;
-      }
+    setItemStatus(listItem, 'done');
+    setItemSize(listItem, fmtMB(file.size));
+    setItemProgress(listItem, 100);
+    log(`${file.name} enviado`, 'send');
 
-      // Backpressure: espera o buffer do canal esvaziar
-      if (dataChannel.bufferedAmount > BUFFER_HIGH_WATER) {
-        await waitForBufferDrain();
-      }
-
-      reader.readAsArrayBuffer(file.slice(offset, offset + CHUNK_SIZE));
-    };
-
-    reader.onload = async (e) => {
-      if (signal.aborted) { resolve(); return; }
-
-      const raw = e.target.result;
-
-      // Monta pacote: [4 bytes idLen LE][id UTF-8][dados] — sem Blob, direto em Uint8Array
-      const idBytes = new TextEncoder().encode(id);
-      const buf = new Uint8Array(4 + idBytes.length + raw.byteLength);
-      new DataView(buf.buffer).setUint32(0, idBytes.length, true);
-      buf.set(idBytes, 4);
-      buf.set(new Uint8Array(raw), 4 + idBytes.length);
-      dataChannel.send(buf.buffer);
-
-      offset += raw.byteLength;
-      const pct = ((offset / file.size) * 100).toFixed(1);
-      setItemSize(listItem, `${pct}% · ${fmtMB(offset)} de ${fmtMB(file.size)}`);
-      setItemProgress(listItem, pct);
-      sendNextChunk();
-    };
-
-    reader.onerror = () => {
-      setItemStatus(listItem, 'error');
-      log(`Erro ao ler ${file.name}`, 'error');
-      resolve();
-    };
-
-    sendNextChunk();
-  });
+  } catch (err) {
+    abort(`(erro: ${err.message})`);
+    log(`Erro ao enviar ${file.name}: ${err.message}`, 'error');
+  } finally {
+    reader.releaseLock();
+  }
 }
 
 // Aguarda o bufferedAmount cair abaixo do limiar — usando bufferedamountlow
