@@ -523,17 +523,23 @@ async function writeChunk(entry, data) {
 
 // ─── Finalização de recepção ─────────────────────────────────────────────────
 async function finalizeReceive(entry) {
+  setItemStatus(entry.listItem, 'finalizing'); // novo status — "finalizando..."
+  log(`Finalizando "${entry.meta.name}" — gravando no disco (pode levar um tempo em arquivos grandes)…`, 'info');
+  
+  // ACK imediato — bytes já chegaram, remetente pode avançar
+  dataChannel.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
+  receiveMap.delete(entry.meta.id);
+  
+  // Close em paralelo — não bloqueia o próximo arquivo
   if (entry.isStreaming && entry.writable) {
-    setItemStatus(entry.listItem, 'finalizing'); // novo status — "finalizando..."
-    log(`Finalizando "${entry.meta.name}" — gravando no disco (pode levar um tempo em arquivos grandes)…`, 'info');
     try {
       await entry.writable.close();
+      log(`${entry.meta.name} salvo em disco`, 'receive');
     } catch (err) {
       setItemStatus(entry.listItem, 'error');
       console.error(`Error closing "${entry.meta.name}" on disk: ${err.name} - ${err.message}`);
       log(`Erro ao fechar "${entry.meta.name}": ${err.name} - ${err.message}`, 'error');
     }
-    log(`${entry.meta.name} salvo em disco`, 'receive');
   } else {
     const blob = new Blob(entry.buffers, { type: entry.meta.type || 'application/octet-stream' });
     const url  = URL.createObjectURL(blob);
@@ -552,11 +558,6 @@ async function finalizeReceive(entry) {
   setItemStatus(entry.listItem, 'done');
   setItemSize(entry.listItem, `${fmtMB(entry.meta.size)}`);
   setItemProgress(entry.listItem, 100);
-
-  // Confirma recebimento ao remetente
-  dataChannel.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
-
-  receiveMap.delete(entry.meta.id);
 
   receivedFilesCount++;
   
