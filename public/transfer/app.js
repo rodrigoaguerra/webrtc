@@ -43,7 +43,6 @@ let inFlightBytes = 0;
 
 // ─── Constantes ─────────────────────────────────────────────────────────────
 const MAX_FILE_SIZE     = 1024 * 1024 * 1024 * 1.5;  // 1.5 GB
-const MAX_IN_FLIGHT_BYTES = MAX_FILE_SIZE            // 1 GB
 const BUFFER_HIGH_WATER = 4 * 1024 * 1024;           // 4 MB — pausa envio
 const BUFFER_LOW_WATER  = 512 * 1024;                // 512 KB — retoma envio
 const CONCURRENT        = 10;                        // 10 arquivos em paralelo
@@ -646,18 +645,18 @@ async function sendFiles() {
     }));
   }
 
-  // 3. Envia um arquivo de cada vez, aguardando ACK antes do próximo
+  // 3. Envia os arquivos em paralelo, aguardando ACK antes do próximo lote ser enviado
   await requestWakeLock();
 
-  log(`Enviando ${toSend.length} arquivo(s) sequencialmente`, 'info');
+  log(`Enviando ${toSend.length} arquivo(s) de ${fmtMB(toSend.reduce((a, b) => a + b.file.size, 0))}`, 'info');
 
   const executing = new Set();
 
   for (const item of toSend) {
     if (sendAbortController.signal.aborted) break;
 
-    // 🔥 ESPERA espaço no buffer global (bytes em voo)
-    while (inFlightBytes + item.file.size > MAX_IN_FLIGHT_BYTES && executing.size > 0) {
+    // 🔥 ESPERA espaço no buffer global (bytes em voo) 1.5 GB para evitar estouro de mémoria
+    while (inFlightBytes + item.file.size > MAX_FILE_SIZE && executing.size > 0) {
       await Promise.race(executing);
     }
 
