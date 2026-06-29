@@ -1,0 +1,209 @@
+/* src/index.css */
+@import url('https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=Outfit:wght@300;400;600;700&display=swap');
+
+*, *::before, *::after { 
+  box-sizing: border-box; 
+  margin: 0; 
+  padding: 0; 
+}
+
+:root {
+  --bg:        #080c12;
+  --surface:   #0d1420;
+  --border:    #1a2a40;
+  --accent:    #00d4ff;
+  --accent2:   #0066ff;
+  --green:     #00ff88;
+  --text:      #c8d8e8;
+  --muted:     #4a6080;
+  --card-glow: rgba(0, 212, 255, 0.06);
+}
+
+html { 
+  scroll-behavior: smooth; 
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Outfit', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* Grid background */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(0,212,255,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0,212,255,0.03) 1px, transparent 1px);
+  background-size: 48px 48px;
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Radial glow top */
+body::after {
+  content: '';
+  position: fixed;
+  top: -200px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 800px;
+  height: 500px;
+  background: radial-gradient(ellipse, rgba(0,102,255,0.12) 0%, transparent 70%);
+  pointer-events: none;
+  z-index: 0;
+}
+
+/* Custom Animations */
+@keyframes fadeDown {
+  from { opacity: 0; transform: translateY(-20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fadeUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+
+#transferContainer {
+  display: flex;
+  width: 100%;
+  gap: 0; /* sem gap pra não estourar */
+}
+
+#sendQueueContainer,
+#receiveQueueContainer {
+  position: relative;
+  width: 50%;
+  flex-shrink: 0;
+  min-width: 0;
+  
+  padding: 20px;
+  border: 1px solid #ccc;
+  box-sizing: border-box;
+}
+
+#emptySendQueue,
+#emptyReceiveQueue {
+  text-align: center;
+  margin: 10px 0 0;
+  color: #6b7280;
+  font-size: 0.95rem;
+}
+
+.file-queue {
+  list-style: none;
+  padding: 0;
+  margin: 20px auto;
+  max-width: 480px;
+  max-height: 300px;
+  text-align: left;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.file-queue li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  margin-bottom: 6px;
+  background: rgba(255,255,255,.05);
+  font-size: 14px;
+  transition: background 0.2s;
+}
+
+/* Estados do item na fila */
+.file-queue li.status-pending  { border-left: 4px solid #999; }
+.file-queue li.status-active   { border-left: 4px solid #2196F3; background: rgba(33, 150, 243, 0.1); }
+.file-queue li.status-finalizing { border-left: 4px solid #FFC107; background: rgba(255, 193, 7, 0.1); }
+.file-queue li.status-done     { border-left: 4px solid #4CAF50; background: rgba(76, 175, 80, 0.1); }
+.file-queue li.status-error    { border-left: 4px solid #f44336; background: rgba(244, 67, 54, 0.1); }
+
+.file-queue .file-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-queue .file-size {
+  color: #666;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.file-queue .file-icon {
+  font-size: 18px;
+}
+
+/* Barra de progresso por arquivo */
+.file-queue li {
+  flex-wrap: wrap;
+}
+
+.file-progress-bar-wrap {
+  width: 100%;
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.file-progress-bar {
+  height: 100%;
+  background: #2196F3;
+  border-radius: 2px;
+  transition: width 0.15s linear;
+  width: 0%;
+}
+
+li.status-done .file-progress-bar { background: #4CAF50; width: 100%; }
+li.status-error .file-progress-bar { background: #f44336; }
+
+/** Container de aceite e envio de arquivos */
+#acceptContainer,
+#sendContainer {
+  display: none; /** começa oculto depois fica flex **/
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 10px;
+  padding: 15px; 
+  background: rgba(255,255,255,.05);
+  border: 2px solid #4CAF50; 
+  border-radius: 8px; 
+  margin: 10px 0;
+
+  /** Sobrepor div de fila **/
+  position: absolute;
+  top: 35%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 80%;
+  text-align: center;
+  background: white; /* ou a cor de fundo do seu tema, para não ficar transparente sobre a lista */
+  color: black;
+  z-index: 10;
+}
+
+#btn-send,
+#btn-accept {
+  background-color: #4CAF50; 
+  color: white; 
+  padding: 10px 20px; 
+  border: none; 
+  border-radius: 4px; 
+  cursor: pointer;
+}
