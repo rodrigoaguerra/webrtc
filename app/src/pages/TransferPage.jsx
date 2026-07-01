@@ -115,6 +115,8 @@ export default function TransferPage() {
     sendStartTime: 0, 
     receiveStartTime: 0, 
     chunkSize: 250 * 1024, // 250 KB por padrão
+    bufferHighWater: 4 * 1024 * 1024, // 4 MB
+    bufferLowWater: 512 * 1024, // 512 KB
     peerMode: 'memory',
     maxFileSize: 1024 * 1024 * 256, // 256 MB -- limite de envio em memória
     peerRecievedMode: 'memory',
@@ -122,8 +124,8 @@ export default function TransferPage() {
   });
 
   // ── Constantes ──
-  const BUFFER_HIGH_WATER = 4 * 1024 * 1024;      // 4 MB
-  const BUFFER_LOW_WATER = 512 * 1024;            // 512 KB
+  const NUM_BUFFER_HIGH_WATER = 16                // 250 KB * 16 = 4 MB
+  const NUM_BUFFER_LOW_WATER = 1                  // 512 KB * 1 = 512 KB 
   const MB_UPDATE_PROGRESS = 5 * 1024 * 1024;     // 5 MB para atualizar o progresso na interface
 
   const TEXT_DECODER = new TextDecoder(); // Decodificador UTF-8 para handleChunk
@@ -278,7 +280,12 @@ export default function TransferPage() {
 
       const negotiatedMax = pcRef.current.sctp?.maxMessageSize || (64 * 1024);
       countersRef.current.chunkSize = Math.max(16 * 1024, Math.min(negotiatedMax - 6144, 1024 * 1024));
-      addLog(`Tamanho de chunk ajustado: ${fmtMB(countersRef.current.chunkSize)}`, 'info');
+
+      // Calcula os watermarks baseado no chunkSize real
+      countersRef.current.bufferHighWater = countersRef.current.chunkSize * NUM_BUFFER_HIGH_WATER;
+      countersRef.current.bufferLowWater  = countersRef.current.chunkSize * NUM_BUFFER_LOW_WATER;
+
+      addLog(`Tamanho de chunk: ${fmtMB(countersRef.current.chunkSize)} · High water: ${fmtMB(countersRef.current.bufferHighWater)} · Low water: ${fmtMB(countersRef.current.bufferLowWater)}`, 'info');
 
       if(typeof window.showDirectoryPicker === 'function') {
         countersRef.current.peerMode = 'disk';
@@ -471,6 +478,9 @@ export default function TransferPage() {
     if (!entry) return;
 
     // Atualiza contagem imediatamente, fora do writeLock
+    entry.receivedSize += chunk.byteLength;
+    const isLast = entry.receivedSize >= entry.meta.size;
+
     const pct = Math.min(100, (entry.receivedSize / entry.meta.size) * 100).toFixed(1);
     const ultimosBytesAtualizados = lastBytesUiUpdateRef.current.get(entry.id) || 0;
 
@@ -492,7 +502,7 @@ export default function TransferPage() {
     entry.writeLock = entry.writeLock
       .then(() => writeChunk(entry, chunk))
       .then(async () => {
-        if (!entry.finalized && entry.receivedSize >= entry.meta.size) {
+        if (!entry.finalized && isLast) {
           entry.finalized = true;
           await finalizeReceive(entry);
         }
@@ -513,7 +523,6 @@ export default function TransferPage() {
       }
       entry.buffers.push(data);
     }
-    entry.receivedSize += data.byteLength;
   };
 
   // ── Ações de envio ──
@@ -632,7 +641,7 @@ export default function TransferPage() {
             return resolve();
           }
 
-          if (dataChannelRef.current.bufferedAmount > BUFFER_HIGH_WATER) {
+          if (dataChannelRef.current.bufferedAmount > countersRef.current.bufferHighWater) {
             await waitForBufferDrain();
           }
 
@@ -671,8 +680,8 @@ export default function TransferPage() {
 
   const waitForBufferDrain = () => {
     return new Promise((resolve) => {
-      if (dataChannelRef.current.bufferedAmount <= BUFFER_LOW_WATER) return resolve();
-      dataChannelRef.current.bufferedAmountLowThreshold = BUFFER_LOW_WATER;
+      if (dataChannelRef.current.bufferedAmount <= countersRef.current.bufferLowWater) return resolve();
+      dataChannelRef.current.bufferedAmountLowThreshold = countersRef.current.bufferLowWater;
       dataChannelRef.current.addEventListener('bufferedamountlow', () => resolve(), { once: true });
     });
   };
@@ -725,7 +734,10 @@ export default function TransferPage() {
   // ── Finalização de Recepção ──
   const finalizeReceive = async (entry) => {
     setRecieveQueueMap(entry.id, { status: 'finalizing' });
-
+    
+    dataChannelRef.current.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
+    receiveMapRef.current.delete(entry.meta.id);  
+        
     if (countersRef.current.peerMode === 'opfs' && entry.writable) {
       try {
         await entry.writable.close(); // Fecha o fluxo de escrita de forma segura
@@ -743,11 +755,7 @@ export default function TransferPage() {
         a.click();
         document.body.removeChild(a);
         
-        // 3. Notifica o remetente e limpa o mapa de controle síncrono
-        dataChannelRef.current.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
-        receiveMapRef.current.delete(entry.meta.id);  
-        
-        // 4. A SOLUÇÃO: Aguarda 2 segundos para dar tempo ao Firefox de iniciar o download 
+        // 3. Aguarda 2 segundos para dar tempo ao Firefox de iniciar o download 
         // antes de limpar a memória e o espaço em disco
         setTimeout(async () => {
           URL.revokeObjectURL(url); // Libera o ponteiro da memória
@@ -766,8 +774,6 @@ export default function TransferPage() {
       }
     } else if (entry.isStreaming && entry.writable) {
       try {
-        dataChannelRef.current.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.meta.id } }));
-        receiveMapRef.current.delete(entry.id);
         await entry.writable.close();
         addLog(`${entry.meta.name} salvo em disco`, 'receive');
       } catch (err) {
@@ -777,9 +783,6 @@ export default function TransferPage() {
     } else {
       const blob = new Blob(entry.buffers, { type: entry.meta.type || 'application/octet-stream' });
       entry.buffers = []; // Limpa a referência imediatamente aqui!
-      
-      dataChannelRef.current.send(JSON.stringify({ type: 'received', data: { name: entry.meta.name, id: entry.id } }));
-      receiveMapRef.current.delete(entry.id);  
 
       const url = URL.createObjectURL(blob);
       const a = Object.assign(document.createElement('a'), { href: url, download: entry.meta.relativePath || entry.meta.name });
@@ -809,6 +812,7 @@ export default function TransferPage() {
   return (
     <PageWrapper>
       <HeaderComponent 
+        icon='📁'
         title="WebRTC · Transferência P2P" 
         description="Node.js Socket.IO backend · React.js Socket.IO frontend" 
         />

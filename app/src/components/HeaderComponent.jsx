@@ -25,10 +25,10 @@ const HeaderWrapper = styled(Box)(() => ({
   }
 }));
 
-export default function HeaderComponent({ title, description }) {
+export default function HeaderComponent({ icon, title, description }) {
   return (
     <HeaderWrapper>
-      <div className="logo">📁</div>
+      <div className="logo">{icon}</div>
       <div>
         <Typography variant="h1">{title}</Typography>
         <p>{description}</p>

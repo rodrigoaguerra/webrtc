@@ -1,9 +1,9 @@
 import { Link } from 'react-router-dom';
 import { Box, styled } from '@mui/material';
 
-const ConectionWrapper = styled(Box)(() => ({  
+const ConectionWrapper = styled(Box)(({ username }) => ({  
   display: 'grid',
-  gridTemplateColumns: '1fr 1fr auto',
+  gridTemplateColumns: username ? '1fr 1fr 1fr auto' : '1fr 1fr auto',
   gap: '.75rem',
   alignItems: 'end',
   '& label':  { 
@@ -49,13 +49,19 @@ const Btn = styled('button')({
   }
 });
 
-export default function ConectionComponent({ srvUrl, setSrvUrl, room, setRoom, handleConnect, dotWs }) {
+export default function ConectionComponent({ srvUrl, setSrvUrl, room, setRoom, handleConnect, dotWs, username, setUsername }) {
   return (
-    <ConectionWrapper>
+    <ConectionWrapper username={username}>
       <div>
         <label>Servidor Signaling</label>
         <input value={srvUrl} onChange={e => setSrvUrl(e.target.value)} disabled={dotWs === 'green'} />
       </div>
+      {username && (
+        <div>
+          <label>Seu Nome</label>
+          <input value={username} onChange={e => setUsername(e.target.value)} disabled={dotWs === 'green'} />
+        </div>
+      )}
       <div>
         <label>Sala</label>
         <input value={room} onChange={e => setRoom(e.target.value)} disabled={dotWs === 'green'} />
