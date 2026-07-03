@@ -1,12 +1,14 @@
+import { lazy } from 'react';
 import { createBrowserRouter } from 'react-router-dom';
-import Home from '../pages/Home';
-import VideoPage from '../pages/VideoPage';
-import TransferPage from '../pages/TransferPage';
-import ChatPage from '../pages/ChatPage';
+
+const Home = lazy(() => import('../pages/Home'));
+const VideoPage = lazy(() => import('../pages/VideoPage'));
+const TransferPage = lazy(() => import('../pages/TransferPage'));
+const ChatPage = lazy(() => import('../pages/ChatPage'));
 
 export const router = createBrowserRouter([
-  { path: '/', element: <Home />, }, // A Home carrega diretamente sem um layout superior obrigatório, respeitando seu HTML originalx
-  { path: '/video', element: <VideoPage />, },
-  { path: '/transfer', element: <TransferPage />, },
-  { path: '/chat', element: <ChatPage />, },
+  { path: '/', element: <Home /> },
+  { path: '/video', element: <VideoPage /> },
+  { path: '/transfer', element: <TransferPage /> },
+  { path: '/chat', element: <ChatPage /> },
 ]);
