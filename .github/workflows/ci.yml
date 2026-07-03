@@ -1,0 +1,55 @@
+name: Deploy React via SSH
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout código
+        uses: actions/checkout@v4
+
+      - name: Instalar Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Instalar dependências do app React
+        working-directory: ./app
+        run: npm ci
+
+      - name: Verificar vulnerabilidades de produção no app
+        working-directory: ./app
+        run: npm audit --omit=dev
+
+      - name: Build React
+        working-directory: ./app
+        run: npm run build
+        env:
+          NODE_ENV: production
+            
+      - name: Limpar pasta antiga no servidor
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          script: |
+            mkdir -p public_html/webrtc
+            rm -rf public_html/webrtc/*
+      
+      - name: Deploy via SSH
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          port: ${{ secrets.SSH_PORT }}
+          source: "app/dist/*"
+          target: "public_html/webrtc"
+          strip_components: 0
